@@ -123,6 +123,29 @@ def _extract_text(message) -> str:
     return ""
 
 
+def _extract_location(message) -> dict:
+    """
+    从 OneBot 消息段中提取位置信息。
+    QQ 位置分享的消息段格式:
+      {"type": "location", "data": {"lat": "39.90", "lon": "116.40", "title": "天安门", "content": "北京市..."}}
+    也可能是 JSON 类型:
+      {"type": "json", "data": {"data": "..."}}  (包含 location 信息)
+    返回 {"lat": str, "lon": str, "title": str, "content": str} 或空 dict
+    """
+    if not isinstance(message, list):
+        return {}
+    for seg in message:
+        if seg.get("type") == "location":
+            data = seg.get("data", {})
+            return {
+                "lat": str(data.get("lat", "")),
+                "lon": str(data.get("lon", "")),
+                "title": data.get("title", ""),
+                "content": data.get("content", ""),
+            }
+    return {}
+
+
 def _is_at_me(message, self_id: int) -> bool:
     """检查消息中是否 @了机器人"""
     if isinstance(message, list):
@@ -154,6 +177,17 @@ async def onebot_event(request: Request):
     self_id = event.get("self_id")            # 机器人 QQ 号
 
     text = _extract_text(raw_message)
+
+    # 检查是否是位置分享消息
+    location = _extract_location(raw_message)
+    if location and location.get("lat"):
+        loc_parts = []
+        if location.get("title"):
+            loc_parts.append(location["title"])
+        if location.get("content"):
+            loc_parts.append(location["content"])
+        loc_desc = "，".join(loc_parts) if loc_parts else f"经纬度({location['lat']}, {location['lon']})"
+        text = f"[用户发送了位置] {loc_desc} (坐标: {location['lat']}, {location['lon']})"
 
     if not text:
         return {"status": "empty"}
@@ -231,6 +265,7 @@ async def _handle_message(session_id: str, text: str, user_qq: str = "", group_i
             "- 查快递物流\n"
             "- 搜歌、看热歌榜\n"
             "- 看热点新闻\n"
+            "- 发送位置可定位、查IP/手机号归属地\n"
             "- 给指定QQ号发消息\n"
             "- 发送「清空记录」重置对话"
         )

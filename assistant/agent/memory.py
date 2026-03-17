@@ -10,12 +10,94 @@ Memory - 长期记忆模块
 import json
 import datetime
 from pathlib import Path
+from typing import Optional
+
+
+def _sanitize_messages(messages: list[dict]) -> list[dict]:
+    """
+    清理消息列表，确保 tool_calls / tool 配对完整。
+    规则:
+    - role=tool 的消息，前面必须有一条包含 tool_calls 的 assistant 消息
+    - 如果发现孤立的 tool 消息（前面没有 tool_calls），直接丢弃
+    - 如果 assistant 有 tool_calls 但后面缺少对应的 tool 响应，也丢弃该 assistant 消息
+    """
+    result = []
+    # 收集所有有效的 tool_call_id
+    valid_tc_ids = set()
+    for msg in messages:
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            for tc in msg["tool_calls"]:
+                tc_id = tc.get("id", "")
+                if tc_id:
+                    valid_tc_ids.add(tc_id)
+
+    # 第一遍: 找出实际有 tool 响应的 tool_call_id
+    responded_tc_ids = set()
+    for msg in messages:
+        if msg.get("role") == "tool":
+            tc_id = msg.get("tool_call_id", "")
+            if tc_id in valid_tc_ids:
+                responded_tc_ids.add(tc_id)
+
+    # 第二遍: 构建干净的消息列表
+    for msg in messages:
+        role = msg.get("role", "")
+
+        if role == "tool":
+            tc_id = msg.get("tool_call_id", "")
+            if tc_id in valid_tc_ids:
+                result.append(msg)
+            # 否则丢弃（孤立的 tool 消息）
+
+        elif role == "assistant" and msg.get("tool_calls"):
+            # 检查这条 assistant 的所有 tool_calls 是否都有对应的 tool 响应
+            tc_ids = [tc.get("id", "") for tc in msg["tool_calls"]]
+            if all(tc_id in responded_tc_ids for tc_id in tc_ids):
+                result.append(msg)
+            # 否则丢弃（tool_calls 没有对应响应的 assistant 消息）
+
+        else:
+            result.append(msg)
+
+    return result
+
+
+def _find_safe_cut(messages: list[dict], target_cut: int) -> int:
+    """
+    在 target_cut 附近找到一个安全切分点，
+    确保不会把 assistant(tool_calls) 和其后的 tool 响应拆开。
+    向前移动切分点直到安全。
+    """
+    if target_cut <= 0:
+        return 0
+    if target_cut >= len(messages):
+        return len(messages)
+
+    cut = target_cut
+    while cut > 0:
+        msg = messages[cut]
+        role = msg.get("role", "")
+
+        # 切分点在 tool 消息上 → 不安全，往前
+        if role == "tool":
+            cut -= 1
+            continue
+
+        # 切分点在 assistant(tool_calls) 上 → 不安全（后面的 tool 会被切掉），往前
+        if role == "assistant" and msg.get("tool_calls"):
+            cut -= 1
+            continue
+
+        # 安全位置
+        break
+
+    return cut
 
 
 class Memory:
     """Agent 记忆系统"""
 
-    def __init__(self, storage_dir: Path | None = None, max_short_term: int = 30):
+    def __init__(self, storage_dir: Optional[Path] = None, max_short_term: int = 30):
         self.storage_dir = storage_dir or (Path.home() / ".ai_assistant" / "memory")
         self.storage_dir.mkdir(parents=True, exist_ok=True)
         self.max_short_term = max_short_term
@@ -41,8 +123,8 @@ class Memory:
         self.short_term.append(msg)
 
     def get_messages(self) -> list[dict]:
-        """获取短期记忆中的所有消息"""
-        return list(self.short_term)
+        """获取短期记忆中的所有消息（确保 tool_calls/tool 配对完整）"""
+        return _sanitize_messages(self.short_term)
 
     def needs_compression(self) -> bool:
         """判断是否需要压缩记忆"""
@@ -52,10 +134,16 @@ class Memory:
         """
         压缩短期记忆：保留最近的几轮对话，
         将较早的内容替换为 LLM 生成的摘要。
+        切分时确保不拆散 tool_calls/tool 配对。
         """
-        keep_recent = 10  # 保留最近10条
-        old_messages = self.short_term[:-keep_recent] if len(self.short_term) > keep_recent else []
-        recent = self.short_term[-keep_recent:] if len(self.short_term) > keep_recent else self.short_term
+        keep_recent = 10  # 目标保留条数
+
+        # 找安全切分点：从目标位置往前找，确保不拆散 tool 调用组
+        cut = max(0, len(self.short_term) - keep_recent)
+        cut = _find_safe_cut(self.short_term, cut)
+
+        old_messages = self.short_term[:cut]
+        recent = self.short_term[cut:]
 
         # 保存摘要到长期记忆
         if old_messages:

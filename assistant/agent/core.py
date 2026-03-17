@@ -255,6 +255,8 @@ class AgentCore:
         ctx_parts = []
         if self.session_context.get("user_qq"):
             ctx_parts.append(f"当前对话用户的QQ号: {self.session_context['user_qq']}")
+        if self.session_context.get("user_display_name"):
+            ctx_parts.append(f"当前对话用户的名称: {self.session_context['user_display_name']}")
         if self.session_context.get("group_id"):
             ctx_parts.append(f"当前对话所在群号: {self.session_context['group_id']}")
         session_ctx = "\n".join(ctx_parts) if ctx_parts else ""

@@ -22,6 +22,9 @@ import httpx
 from fastapi import Request
 
 from assistant.web.api import app, get_agent
+from assistant.agent.contacts_db import (
+    record_user_interaction, record_group_interaction, get_user_display_name,
+)
 
 # NapCat HTTP API 地址 (NapCat 监听的端口)
 NAPCAT_API_URL = os.getenv("NAPCAT_API_URL", "http://127.0.0.1:3000")
@@ -49,6 +52,38 @@ def _is_admin(user_id: int) -> bool:
         return False
     admins = [a.strip() for a in ADMIN_QQ.split(",") if a.strip()]
     return str(user_id) in admins
+
+
+async def _fetch_qq_nickname(user_id: int) -> str:
+    """通过 NapCat API 获取 QQ 用户昵称"""
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.post(
+                f"{NAPCAT_API_URL}/get_stranger_info",
+                json={"user_id": user_id},
+            )
+            data = resp.json()
+            if data.get("status") == "ok" or data.get("retcode") == 0:
+                return data.get("data", {}).get("nickname", "")
+    except Exception:
+        pass
+    return ""
+
+
+async def _fetch_group_name(group_id: int) -> str:
+    """通过 NapCat API 获取群名称"""
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.post(
+                f"{NAPCAT_API_URL}/get_group_info",
+                json={"group_id": group_id},
+            )
+            data = resp.json()
+            if data.get("status") == "ok" or data.get("retcode") == 0:
+                return data.get("data", {}).get("group_name", "")
+    except Exception:
+        pass
+    return ""
 
 
 async def _send_private_msg(user_id: int, text: str):
@@ -125,6 +160,13 @@ async def onebot_event(request: Request):
 
     # ---- 私聊 ----
     if message_type == "private":
+        # 自动记录用户信息
+        sender = event.get("sender", {})
+        nickname = sender.get("nickname", "")
+        if not nickname:
+            nickname = await _fetch_qq_nickname(user_id)
+        record_user_interaction(str(user_id), nickname)
+
         reply = await _handle_message(
             session_id=str(user_id),
             text=text,
@@ -146,6 +188,16 @@ async def onebot_event(request: Request):
         if GROUP_AT_ONLY and not _is_at_me(raw_message, self_id):
             return {"status": "ignored"}
 
+        # 自动记录用户和群信息
+        sender = event.get("sender", {})
+        nickname = sender.get("nickname") or sender.get("card", "")
+        if not nickname:
+            nickname = await _fetch_qq_nickname(user_id)
+        record_user_interaction(str(user_id), nickname)
+
+        group_name = await _fetch_group_name(group_id)
+        record_group_interaction(str(group_id), group_name)
+
         # 群聊用 "group_群号_QQ号" 作为会话ID, 每个人独立上下文
         session_id = f"group_{group_id}_{user_id}"
         reply = await _handle_message(
@@ -160,7 +212,7 @@ async def onebot_event(request: Request):
     return {"status": "ignored"}
 
 
-async def _handle_message(session_id: str, text: str, user_qq: str = "", group_id: str | None = None) -> str:
+async def _handle_message(session_id: str, text: str, user_qq: str = "", group_id: str = "") -> str:
     """处理消息: 命令或对话"""
     # 命令
     if text == "清空记录":
@@ -170,13 +222,16 @@ async def _handle_message(session_id: str, text: str, user_qq: str = "", group_i
 
     if text == "帮助":
         return (
-            "我是AI助手，你可以:\n"
+            "我是美萌robot，你可以:\n"
             "- 直接聊天对话\n"
-            "- 让我查时间、天气\n"
-            "- 让我记笔记、查笔记\n"
-            "- 让我做数学计算\n"
+            "- 查天气、翻译、搜索\n"
+            "- 记笔记、查笔记\n"
+            "- 做数学计算\n"
             "- 设定提醒（如: 30分钟后提醒我开会）\n"
-            "- 让我给指定QQ号发消息\n"
+            "- 查快递物流\n"
+            "- 搜歌、看热歌榜\n"
+            "- 看热点新闻\n"
+            "- 给指定QQ号发消息\n"
             "- 发送「清空记录」重置对话"
         )
 
@@ -184,9 +239,11 @@ async def _handle_message(session_id: str, text: str, user_qq: str = "", group_i
     try:
         agent = await get_agent(session_id)
         # 注入 QQ 上下文，让 Agent 知道当前用户是谁
+        display_name = get_user_display_name(user_qq) if user_qq else ""
         agent.session_context = {
             "user_qq": user_qq,
             "group_id": group_id,
+            "user_display_name": display_name,
         }
         reply = await agent.chat(text)
         return reply

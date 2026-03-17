@@ -1,0 +1,17 @@
+[project]
+name = "mcp-ai-assistant"
+version = "0.1.0"
+description = "私人AI助手 - 基于MCP协议 + DeepSeek"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=1.0.0",
+    "openai>=1.0.0",
+    "python-dotenv>=1.0.0",
+    "httpx>=0.27.0",
+    "fastapi>=0.110.0",
+    "uvicorn>=0.27.0",
+]
+
+[project.scripts]
+ai-assistant = "assistant.main:main"
+ai-assistant-qq = "assistant.web.run:main"

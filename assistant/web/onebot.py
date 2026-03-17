@@ -125,7 +125,12 @@ async def onebot_event(request: Request):
 
     # ---- 私聊 ----
     if message_type == "private":
-        reply = await _handle_message(str(user_id), text)
+        reply = await _handle_message(
+            session_id=str(user_id),
+            text=text,
+            user_qq=str(user_id),
+            group_id=None,
+        )
         await _send_private_msg(user_id, reply)
         return {"status": "ok"}
 
@@ -143,14 +148,19 @@ async def onebot_event(request: Request):
 
         # 群聊用 "group_群号_QQ号" 作为会话ID, 每个人独立上下文
         session_id = f"group_{group_id}_{user_id}"
-        reply = await _handle_message(session_id, text)
+        reply = await _handle_message(
+            session_id=session_id,
+            text=text,
+            user_qq=str(user_id),
+            group_id=str(group_id),
+        )
         await _send_group_msg(group_id, reply, at_user=user_id)
         return {"status": "ok"}
 
     return {"status": "ignored"}
 
 
-async def _handle_message(session_id: str, text: str) -> str:
+async def _handle_message(session_id: str, text: str, user_qq: str = "", group_id: str | None = None) -> str:
     """处理消息: 命令或对话"""
     # 命令
     if text == "清空记录":
@@ -166,12 +176,18 @@ async def _handle_message(session_id: str, text: str) -> str:
             "- 让我记笔记、查笔记\n"
             "- 让我做数学计算\n"
             "- 设定提醒（如: 30分钟后提醒我开会）\n"
+            "- 让我给指定QQ号发消息\n"
             "- 发送「清空记录」重置对话"
         )
 
     # 正常对话
     try:
         agent = await get_agent(session_id)
+        # 注入 QQ 上下文，让 Agent 知道当前用户是谁
+        agent.session_context = {
+            "user_qq": user_qq,
+            "group_id": group_id,
+        }
         reply = await agent.chat(text)
         return reply
     except Exception as e:

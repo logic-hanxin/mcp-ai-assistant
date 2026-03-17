@@ -31,13 +31,21 @@ SYSTEM_PROMPT = """你是一个智能私人助手，具备以下能力:
 - 管理个人笔记（创建、搜索、删除）
 - 数学计算
 - 读取本地文件和浏览目录
+- 设定定时提醒（到时自动通过QQ通知用户）
+- 给指定QQ用户或群发送消息
+
+{session_context}
 
 {user_facts}
 
 {plan_context}
 
-请用中文回复，简洁友好。当需要使用工具时请主动调用。
-如果工具调用失败，请尝试其他方式或如实告知用户。"""
+重要规则:
+- 请用中文回复，简洁友好。
+- 当需要使用工具时请主动调用。
+- 创建提醒时，如果知道用户的QQ号，务必将QQ号填入 notify_qq 参数，群号填入 notify_group_id 参数。
+- 发送消息时，使用 send_qq_message 或 send_qq_group_message 工具。
+- 如果工具调用失败，请尝试其他方式或如实告知用户。"""
 
 
 class AgentCore:
@@ -50,6 +58,8 @@ class AgentCore:
         self.memory = Memory()
         self.planner = Planner(self.llm_client, self.model)
         self.reflection = Reflection(self.llm_client, self.model)
+        # 会话上下文 (QQ号、群号等，由外部注入)
+        self.session_context: dict = {}
 
     async def connect(self, server_script: str):
         """连接 MCP Server"""
@@ -230,7 +240,16 @@ class AgentCore:
 
     def _build_system_prompt(self, plan_context: str = "") -> str:
         facts = self.memory.get_facts_prompt()
+        # 构建会话上下文描述
+        ctx_parts = []
+        if self.session_context.get("user_qq"):
+            ctx_parts.append(f"当前对话用户的QQ号: {self.session_context['user_qq']}")
+        if self.session_context.get("group_id"):
+            ctx_parts.append(f"当前对话所在群号: {self.session_context['group_id']}")
+        session_ctx = "\n".join(ctx_parts) if ctx_parts else ""
+
         return SYSTEM_PROMPT.format(
+            session_context=session_ctx,
             user_facts=facts,
             plan_context=f"当前执行计划:\n{plan_context}" if plan_context else "",
         )

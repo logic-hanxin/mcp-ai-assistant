@@ -37,9 +37,10 @@ class ReminderSkill(BaseSkill):
             ToolDefinition(
                 name="create_reminder",
                 description=(
-                    "创建一个定时提醒。到达指定时间后会自动通知用户。"
+                    "创建一个定时提醒。到达指定时间后会自动通过QQ发送提醒消息给用户。"
                     "支持设置具体时间（如 '15:30'、'2025-03-17 09:00'）"
                     "或相对时间（如 '30分钟后'、'2小时后'）。"
+                    "如果知道用户的QQ号，请务必填写 notify_qq 参数。"
                 ),
                 parameters={
                     "type": "object",
@@ -55,6 +56,16 @@ class ReminderSkill(BaseSkill):
                                 "- 绝对时间: '15:30'(今天15:30), '2025-03-17 09:00'\n"
                                 "- 相对时间: '30m'(30分钟后), '2h'(2小时后), '1h30m'(1小时30分钟后)"
                             ),
+                        },
+                        "notify_qq": {
+                            "type": "string",
+                            "description": "接收提醒的QQ号。从对话上下文中获取当前用户的QQ号填入。",
+                            "default": "",
+                        },
+                        "notify_group_id": {
+                            "type": "string",
+                            "description": "如果是群聊场景，填入群号以在群内@提醒。留空则私聊提醒。",
+                            "default": "",
                         },
                     },
                     "required": ["message", "time_str"],
@@ -131,7 +142,7 @@ class ReminderSkill(BaseSkill):
 
         return None
 
-    def _create_reminder(self, message: str, time_str: str) -> str:
+    def _create_reminder(self, message: str, time_str: str, notify_qq: str = "", notify_group_id: str = "") -> str:
         target_time = self._parse_time(time_str)
         if target_time is None:
             return (
@@ -152,6 +163,8 @@ class ReminderSkill(BaseSkill):
             "target_time": target_time.isoformat(),
             "created_at": now.isoformat(),
             "triggered": False,
+            "notify_qq": notify_qq,
+            "notify_group_id": notify_group_id,
         }
         reminders.append(reminder)
         _save_reminders(reminders)

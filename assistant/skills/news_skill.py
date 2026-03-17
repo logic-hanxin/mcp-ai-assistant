@@ -5,65 +5,83 @@ import httpx
 from assistant.skills.base import BaseSkill, ToolDefinition, register
 
 NAPCAT_API_URL = os.getenv("NAPCAT_API_URL", "http://127.0.0.1:3000")
+_UA = {"User-Agent": "Mozilla/5.0"}
 
-# 新闻源配置（免费公开 API）
-NEWS_SOURCES = [
-    {
-        "name": "微博热搜",
-        "url": "https://weibo.com/ajax/side/hotSearch",
-        "parser": "_parse_weibo",
-    },
-    {
-        "name": "知乎热榜",
-        "url": "https://www.zhihu.com/api/v3/feed/topstory/hot-lists/total?limit=20",
-        "parser": "_parse_zhihu",
-    },
-]
 
-# 备用聚合 API（当主源不可用时）
-BACKUP_API = "https://api.vvhan.com/api/hotlist/{source}"
-BACKUP_SOURCES = ["wbHot", "zhihuHot", "baiduRD"]
+def _fetch_baidu(max_items: int) -> list[str]:
+    """百度热搜"""
+    try:
+        resp = httpx.get(
+            "https://top.baidu.com/api/board?platform=wise&tab=realtime",
+            timeout=10, headers=_UA,
+        )
+        if resp.status_code != 200:
+            return []
+        cards = resp.json().get("data", {}).get("cards", [])
+        if not cards:
+            return []
+        # 第一个 card 的 content 列表
+        content = cards[0].get("content", [])
+        if content and isinstance(content[0], dict) and "content" in content[0]:
+            items = content[0]["content"]
+        else:
+            items = content
+        return [item["word"] for item in items[:max_items] if item.get("word")]
+    except Exception:
+        return []
+
+
+def _fetch_toutiao(max_items: int) -> list[str]:
+    """今日头条热榜"""
+    try:
+        resp = httpx.get(
+            "https://www.toutiao.com/hot-event/hot-board/?origin=toutiao_pc",
+            timeout=10, headers=_UA,
+        )
+        if resp.status_code != 200:
+            return []
+        items = resp.json().get("data", [])
+        return [item["Title"] for item in items[:max_items] if item.get("Title")]
+    except Exception:
+        return []
+
+
+def _fetch_pengpai(max_items: int) -> list[str]:
+    """澎湃新闻热榜"""
+    try:
+        resp = httpx.get(
+            "https://cache.thepaper.cn/contentapi/wwwIndex/rightSidebar",
+            timeout=10, headers=_UA,
+        )
+        if resp.status_code != 200:
+            return []
+        hot_news = resp.json().get("data", {}).get("hotNews", [])
+        return [
+            item.get("name") or item.get("title", "")
+            for item in hot_news[:max_items]
+            if item.get("name") or item.get("title")
+        ]
+    except Exception:
+        return []
 
 
 def fetch_hot_news(max_per_source: int = 15) -> dict[str, list[str]]:
     """从多个来源获取热点新闻标题，返回 {来源名: [标题列表]}"""
     results: dict[str, list[str]] = {}
 
-    # 尝试备用聚合 API（更稳定）
-    source_names = {"wbHot": "微博热搜", "zhihuHot": "知乎热榜", "baiduRD": "百度热点"}
-    for src in BACKUP_SOURCES:
+    fetchers = [
+        ("百度热搜", _fetch_baidu),
+        ("头条热榜", _fetch_toutiao),
+        ("澎湃新闻", _fetch_pengpai),
+    ]
+
+    for name, fetcher in fetchers:
         try:
-            resp = httpx.get(
-                BACKUP_API.format(source=src),
-                timeout=10,
-                headers={"User-Agent": "Mozilla/5.0"},
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                if data.get("success"):
-                    items = data.get("data", [])[:max_per_source]
-                    titles = [item.get("title", "") for item in items if item.get("title")]
-                    if titles:
-                        results[source_names.get(src, src)] = titles
+            titles = fetcher(max_per_source)
+            if titles:
+                results[name] = titles
         except Exception:
             continue
-
-    # 如果备用 API 全部失败，尝试直接抓取微博
-    if not results:
-        try:
-            resp = httpx.get(
-                "https://weibo.com/ajax/side/hotSearch",
-                timeout=10,
-                headers={"User-Agent": "Mozilla/5.0"},
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                realtime = data.get("data", {}).get("realtime", [])[:max_per_source]
-                titles = [item.get("note", "") for item in realtime if item.get("note")]
-                if titles:
-                    results["微博热搜"] = titles
-        except Exception:
-            pass
 
     return results
 
@@ -83,14 +101,14 @@ def format_news_text(news: dict[str, list[str]], max_items: int = 10) -> str:
 
 class NewsSkill(BaseSkill):
     name = "news"
-    description = "获取热点新闻，支持手动触发推送"
+    description = "获取热点新闻（百度热搜、头条热榜、澎湃新闻），支持手动触发推送"
 
     def get_tools(self) -> list[ToolDefinition]:
         return [
             ToolDefinition(
                 name="get_hot_news",
                 description=(
-                    "获取当前热点新闻（微博热搜、知乎热榜、百度热点）。"
+                    "获取当前热点新闻（百度热搜、头条热榜、澎湃新闻）。"
                     "返回各平台的热门话题列表。"
                 ),
                 parameters={

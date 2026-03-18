@@ -17,8 +17,12 @@ NapCat 配置示例 (config/onebot11_<QQ号>.json):
 }
 """
 
+from __future__ import annotations
+
 import os
+import json
 import httpx
+from openai import OpenAI
 from fastapi import Request
 
 from assistant.web.api import app, get_agent
@@ -33,7 +37,7 @@ NAPCAT_API_URL = os.getenv("NAPCAT_API_URL", "http://127.0.0.1:3000")
 # 格式: 逗号分隔的群号, 如 "123456,789012"
 ALLOWED_GROUPS = os.getenv("QQ_ALLOWED_GROUPS", "")
 
-# 群聊中是否需要@才回复
+# 群聊中是否需要@才回复 (小彩云模式下建议设为 false)
 GROUP_AT_ONLY = os.getenv("QQ_GROUP_AT_ONLY", "true").lower() == "true"
 
 # 管理员QQ号 (可选, 逗号分隔, 拥有额外命令权限)
@@ -161,6 +165,78 @@ def _is_at_me(message, self_id: int) -> bool:
     return False
 
 
+# ============================================================
+# 群聊智能回复决策
+# ============================================================
+
+# 决策用的轻量 LLM 客户端 (延迟初始化)
+_decision_client: OpenAI | None = None
+
+
+def _get_decision_client() -> OpenAI:
+    """获取决策用的 LLM 客户端"""
+    global _decision_client
+    if _decision_client is None:
+        from assistant.config import load_config
+        cfg = load_config()
+        _decision_client = OpenAI(api_key=cfg.api_key, base_url=cfg.base_url)
+    return _decision_client
+
+
+async def _should_reply_in_group(text: str, sender_name: str, recent_context: str,
+                                  is_at_me: bool) -> bool:
+    """
+    让 LLM 判断小彩云是否应该回复这条群消息。
+    被 @ 时必定回复；否则由 LLM 根据消息内容和上下文判断。
+    """
+    # 被 @ 了一定回复
+    if is_at_me:
+        return True
+
+    # 明确提到小彩云的名字
+    if "小彩云" in text or "彩云" in text:
+        return True
+
+    prompt = f"""你是QQ群里的群友「小彩云」。请判断你是否应该回复下面这条群消息。
+
+判断标准（满足任一即回复）:
+- 有人在问问题、求助、询问信息
+- 在讨论你能帮上忙的话题（天气、活动、协会事务等）
+- 有人在和你打招呼或找你聊天
+- 话题有趣，你作为群友自然会想插嘴
+- 涉及彩云协会相关的事务
+
+不回复的情况:
+- 纯粹的闲聊/灌水/表情包大战，你没什么可补充的
+- 两个人的私密对话，你插嘴不合适
+- 单纯的"嗯""哦""好的"等无实质内容
+- 分享链接但没有讨论
+
+最近的群聊上下文:
+{recent_context}
+
+当前消息:
+{sender_name}: {text}
+
+请只回复一个字: "是" 或 "否"。"""
+
+    try:
+        client = _get_decision_client()
+        response = client.chat.completions.create(
+            model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=5,
+            temperature=0.3,
+        )
+        answer = (response.choices[0].message.content or "").strip()
+        should = answer.startswith("是")
+        print(f"  [决策] {sender_name}: {text[:30]}... → {'回复' if should else '静默'}")
+        return should
+    except Exception as e:
+        print(f"  [决策异常] {e}，默认不回复")
+        return False
+
+
 @app.post("/onebot")
 async def onebot_event(request: Request):
     """
@@ -224,13 +300,9 @@ async def onebot_event(request: Request):
         if not _is_allowed_group(group_id):
             return {"status": "ignored"}
 
-        # 是否需要 @
-        if GROUP_AT_ONLY and not _is_at_me(raw_message, self_id):
-            return {"status": "ignored"}
-
-        # 自动记录用户和群信息
+        # 获取发送者昵称
         sender = event.get("sender", {})
-        nickname = sender.get("nickname") or sender.get("card", "")
+        nickname = sender.get("card") or sender.get("nickname") or ""
         if not nickname:
             nickname = await _fetch_qq_nickname(user_id)
         record_user_interaction(str(user_id), nickname)
@@ -238,15 +310,60 @@ async def onebot_event(request: Request):
         group_name = await _fetch_group_name(group_id)
         record_group_interaction(str(group_id), group_name)
 
-        # 群聊用 "group_群号_QQ号" 作为会话ID, 每个人独立上下文
-        session_id = f"group_{group_id}_{user_id}"
+        # 群聊使用整群共享的 session_id，小彩云看到所有人的消息
+        session_id = f"group_{group_id}"
+        at_me = _is_at_me(raw_message, self_id)
+
+        # 将消息以 "昵称: 内容" 的格式存入群上下文，让小彩云知道谁在说话
+        display_name = get_user_display_name(str(user_id)) or nickname or str(user_id)
+        group_text = f"{display_name}: {text}"
+
+        # 先把消息记录到群上下文（无论是否回复）
+        agent = await get_agent(session_id)
+        agent.session_context = {
+            "user_qq": str(user_id),
+            "group_id": str(group_id),
+            "user_display_name": display_name,
+        }
+
+        # 智能决策: 判断是否需要回复
+        if GROUP_AT_ONLY and not at_me:
+            # AT_ONLY 模式: 必须@才回复（传统模式）
+            # 但仍然把消息记录到上下文中
+            agent.memory.add_message("user", group_text)
+            return {"status": "ignored"}
+
+        if not GROUP_AT_ONLY:
+            # 自由模式: LLM 自主决策是否回复
+            # 先获取最近的群聊上下文供决策参考
+            recent_msgs = agent.memory.get_messages()[-8:]
+            recent_context = "\n".join(
+                f"{m.get('content', '')[:80]}" for m in recent_msgs
+                if m.get("role") == "user"
+            )
+
+            should_reply = await _should_reply_in_group(
+                text=text,
+                sender_name=display_name,
+                recent_context=recent_context,
+                is_at_me=at_me,
+            )
+
+            if not should_reply:
+                # 不回复，但把消息记到上下文（小彩云"看到了"但选择不说话）
+                agent.memory.add_message("user", group_text)
+                return {"status": "silent"}
+
+        # 需要回复: 走完整的 Agent 对话流程
         reply = await _handle_message(
             session_id=session_id,
-            text=text,
+            text=group_text,
             user_qq=str(user_id),
             group_id=str(group_id),
         )
-        await _send_group_msg(group_id, reply, at_user=user_id)
+
+        # 群聊回复不 @ 用户，像普通群友一样说话
+        await _send_group_msg(group_id, reply)
         return {"status": "ok"}
 
     return {"status": "ignored"}
@@ -255,15 +372,15 @@ async def onebot_event(request: Request):
 async def _handle_message(session_id: str, text: str, user_qq: str = "", group_id: str = "") -> str:
     """处理消息: 命令或对话"""
     # 命令
-    if text == "清空记录":
+    if text == "清空记录" or text.endswith(": 清空记录"):
         agent = await get_agent(session_id)
         agent.clear_history()
         return "对话记录已清空！"
 
-    if text == "帮助":
+    if text == "帮助" or text.endswith(": 帮助"):
         return (
-            "我是美萌robot，你可以:\n"
-            "- 直接聊天对话\n"
+            "我是小彩云，彩云协会的AI助手～有什么可以帮你的：\n"
+            "- 直接在群里聊天，我会自己判断要不要回复\n"
             "- 查天气、翻译、搜索\n"
             "- 记笔记、查笔记\n"
             "- 做数学计算\n"
@@ -271,8 +388,7 @@ async def _handle_message(session_id: str, text: str, user_qq: str = "", group_i
             "- 查快递物流\n"
             "- 搜歌、看热歌榜\n"
             "- 看热点新闻\n"
-            "- 发送位置可定位、查IP/手机号归属地\n"
-            "- 给指定QQ号发消息\n"
+            "- 查询协会数据库\n"
             "- 发送「清空记录」重置对话"
         )
 

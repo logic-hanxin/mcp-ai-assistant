@@ -96,15 +96,20 @@ async def run():
                     else:
                         print("  暂无保存的个人信息。")
                 elif cmd == "/reminders":
-                    from assistant.agent.reminder_checker import _load_reminders
+                    from assistant.agent import db as _db
                     import datetime as _dt
-                    reminders = [r for r in _load_reminders() if not r.get("triggered")]
+                    try:
+                        reminders = _db.reminder_get_all_pending()
+                    except Exception:
+                        reminders = []
                     if not reminders:
                         print("  暂无待执行的提醒。")
                     else:
                         now = _dt.datetime.now()
-                        for r in sorted(reminders, key=lambda x: x["target_time"]):
-                            target = _dt.datetime.fromisoformat(r["target_time"])
+                        for r in reminders:
+                            target = r["target_time"]
+                            if isinstance(target, str):
+                                target = _dt.datetime.fromisoformat(target)
                             delta = target - now
                             mins = max(0, int(delta.total_seconds()) // 60)
                             h, m = divmod(mins, 60)

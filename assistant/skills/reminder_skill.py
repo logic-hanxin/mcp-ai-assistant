@@ -1,36 +1,13 @@
 """定时提醒 Skill - 设置提醒，到时间自动通知"""
 
-import json
 import datetime
-from pathlib import Path
 from assistant.skills.base import BaseSkill, ToolDefinition, register
-
-REMINDERS_DIR = Path.home() / ".ai_assistant" / "reminders"
-REMINDERS_FILE = REMINDERS_DIR / "reminders.json"
-
-
-def _load_reminders() -> list[dict]:
-    if REMINDERS_FILE.exists():
-        try:
-            return json.loads(REMINDERS_FILE.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, Exception):
-            return []
-    return []
-
-
-def _save_reminders(reminders: list[dict]):
-    REMINDERS_DIR.mkdir(parents=True, exist_ok=True)
-    REMINDERS_FILE.write_text(
-        json.dumps(reminders, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+from assistant.agent import db
 
 
 class ReminderSkill(BaseSkill):
     name = "reminder"
     description = "定时提醒，设定时间后自动提醒用户"
-
-    def on_load(self):
-        REMINDERS_DIR.mkdir(parents=True, exist_ok=True)
 
     def get_tools(self) -> list[ToolDefinition]:
         return [
@@ -97,11 +74,12 @@ class ReminderSkill(BaseSkill):
 
     def _parse_time(self, time_str: str) -> datetime.datetime | None:
         """解析时间字符串，支持绝对时间和相对时间"""
+        import re
+
         now = datetime.datetime.now()
         s = time_str.strip()
 
         # 相对时间: 30m, 2h, 1h30m, 90s
-        import re
         relative = re.match(r'^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$', s)
         if relative and any(relative.groups()):
             hours = int(relative.group(1) or 0)
@@ -155,19 +133,15 @@ class ReminderSkill(BaseSkill):
         if target_time <= now:
             return f"提醒时间 {target_time.strftime('%Y-%m-%d %H:%M')} 已经过去了，请设置一个未来的时间。"
 
-        reminders = _load_reminders()
-        max_id = max((r["id"] for r in reminders), default=0)
-        reminder = {
-            "id": max_id + 1,
-            "message": message,
-            "target_time": target_time.isoformat(),
-            "created_at": now.isoformat(),
-            "triggered": False,
-            "notify_qq": notify_qq,
-            "notify_group_id": notify_group_id,
-        }
-        reminders.append(reminder)
-        _save_reminders(reminders)
+        try:
+            rid = db.reminder_create(
+                message=message,
+                target_time=target_time.strftime("%Y-%m-%d %H:%M:%S"),
+                notify_qq=notify_qq,
+                notify_group_id=notify_group_id,
+            )
+        except Exception as e:
+            return f"创建提醒失败: {e}"
 
         delta = target_time - now
         hours, remainder = divmod(int(delta.total_seconds()), 3600)
@@ -183,21 +157,26 @@ class ReminderSkill(BaseSkill):
 
         return (
             f"提醒已创建！\n"
-            f"  ID: {reminder['id']}\n"
+            f"  ID: {rid}\n"
             f"  内容: {message}\n"
             f"  时间: {time_display} ({delta_str})"
         )
 
     def _list_reminders(self) -> str:
-        reminders = _load_reminders()
-        pending = [r for r in reminders if not r.get("triggered")]
+        try:
+            pending = db.reminder_get_all_pending()
+        except Exception as e:
+            return f"查询提醒失败: {e}"
+
         if not pending:
             return "暂无待执行的提醒。"
 
         now = datetime.datetime.now()
         lines = []
-        for r in sorted(pending, key=lambda x: x["target_time"]):
-            target = datetime.datetime.fromisoformat(r["target_time"])
+        for r in pending:
+            target = r["target_time"]
+            if isinstance(target, str):
+                target = datetime.datetime.fromisoformat(target)
             delta = target - now
             if delta.total_seconds() > 0:
                 hours, remainder = divmod(int(delta.total_seconds()), 3600)
@@ -215,12 +194,12 @@ class ReminderSkill(BaseSkill):
         return "\n".join(lines)
 
     def _delete_reminder(self, reminder_id: int) -> str:
-        reminders = _load_reminders()
-        original_len = len(reminders)
-        reminders = [r for r in reminders if r["id"] != reminder_id]
-        if len(reminders) == original_len:
+        try:
+            ok = db.reminder_delete(reminder_id)
+        except Exception as e:
+            return f"删除提醒失败: {e}"
+        if not ok:
             return f"未找到 ID 为 {reminder_id} 的提醒。"
-        _save_reminders(reminders)
         return f"提醒 {reminder_id} 已删除。"
 
 

@@ -7,31 +7,14 @@
 """
 
 import os
-import json
 import asyncio
 import datetime
-from pathlib import Path
 
 import httpx
 
-REMINDERS_FILE = Path.home() / ".ai_assistant" / "reminders" / "reminders.json"
+from assistant.agent import db
+
 NAPCAT_API_URL = os.getenv("NAPCAT_API_URL", "http://127.0.0.1:3000")
-
-
-def _load_reminders() -> list[dict]:
-    if REMINDERS_FILE.exists():
-        try:
-            return json.loads(REMINDERS_FILE.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, Exception):
-            return []
-    return []
-
-
-def _save_reminders(reminders: list[dict]):
-    REMINDERS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    REMINDERS_FILE.write_text(
-        json.dumps(reminders, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
 
 
 async def reminder_loop():
@@ -46,37 +29,33 @@ async def reminder_loop():
 
 async def _check_and_notify():
     """检查到期提醒并发送通知"""
-    reminders = _load_reminders()
-    now = datetime.datetime.now()
-    changed = False
+    try:
+        pending = db.reminder_get_pending()
+    except Exception:
+        return
 
-    for r in reminders:
-        if r.get("triggered"):
-            continue
+    for r in pending:
+        await _send_notification(r)
         try:
-            target = datetime.datetime.fromisoformat(r["target_time"])
-        except (ValueError, KeyError):
-            continue
-
-        if now >= target:
-            r["triggered"] = True
-            changed = True
-            await _send_notification(r)
-
-    if changed:
-        reminders = [r for r in reminders if not r.get("triggered")]
-        _save_reminders(reminders)
+            db.reminder_mark_triggered(r["id"])
+        except Exception:
+            pass
 
 
 async def _send_notification(reminder: dict):
     """根据提醒的通知目标发送消息"""
     message = reminder.get("message", "")
-    target_time = reminder.get("target_time", "")
+    target_time = reminder.get("target_time")
     notify_qq = reminder.get("notify_qq", "")
     notify_group_id = reminder.get("notify_group_id", "")
 
     try:
-        time_str = datetime.datetime.fromisoformat(target_time).strftime("%H:%M")
+        if isinstance(target_time, datetime.datetime):
+            time_str = target_time.strftime("%H:%M")
+        elif isinstance(target_time, str):
+            time_str = datetime.datetime.fromisoformat(target_time).strftime("%H:%M")
+        else:
+            time_str = "?"
     except Exception:
         time_str = "?"
 

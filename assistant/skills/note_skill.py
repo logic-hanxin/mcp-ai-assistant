@@ -1,31 +1,13 @@
-"""笔记管理 Skill - 支持创建、列出、搜索、删除笔记"""
+"""笔记管理 Skill - 支持创建、列出、搜索、删除笔记 (MySQL 持久化)"""
 
-import json
-import datetime
-from pathlib import Path
+from __future__ import annotations
+
 from assistant.skills.base import BaseSkill, ToolDefinition, register
 
 
 class NoteSkill(BaseSkill):
     name = "note"
     description = "个人笔记管理，支持创建、列出、搜索、删除"
-
-    def __init__(self):
-        self.notes_dir = Path.home() / ".ai_assistant" / "notes"
-        self.notes_file = self.notes_dir / "notes.json"
-
-    def on_load(self):
-        self.notes_dir.mkdir(parents=True, exist_ok=True)
-
-    def _load(self) -> list[dict]:
-        if self.notes_file.exists():
-            return json.loads(self.notes_file.read_text(encoding="utf-8"))
-        return []
-
-    def _save(self, notes: list[dict]):
-        self.notes_file.write_text(
-            json.dumps(notes, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
 
     def get_tools(self) -> list[ToolDefinition]:
         return [
@@ -81,48 +63,33 @@ class NoteSkill(BaseSkill):
         ]
 
     def _take_note(self, title: str, content: str, tags: str = "") -> str:
-        notes = self._load()
-        max_id = max((n["id"] for n in notes), default=0)
-        note = {
-            "id": max_id + 1,
-            "title": title,
-            "content": content,
-            "tags": [t.strip() for t in tags.split(",") if t.strip()],
-            "created_at": datetime.datetime.now().isoformat(),
-        }
-        notes.append(note)
-        self._save(notes)
-        return f"笔记已保存！ID: {note['id']}，标题: {title}"
+        from assistant.agent.db import note_create
+        note_id = note_create(title, content, tags=tags)
+        return f"笔记已保存！ID: {note_id}，标题: {title}"
 
     def _list_notes(self, tag: str = "") -> str:
-        notes = self._load()
-        if tag:
-            notes = [n for n in notes if tag in n.get("tags", [])]
+        from assistant.agent.db import note_list
+        notes = note_list(tag=tag)
         if not notes:
             return "暂无笔记。" if not tag else f"没有标签为 '{tag}' 的笔记。"
         lines = []
         for n in notes:
-            tags_str = ", ".join(n.get("tags", []))
-            lines.append(f"[{n['id']}] {n['title']}  标签: [{tags_str}]  {n['created_at']}")
+            lines.append(f"[{n['id']}] {n['title']}  标签: [{n.get('tags', '')}]  {n['created_at']}")
         return "\n".join(lines)
 
     def _search_notes(self, query: str) -> str:
-        notes = self._load()
-        q = query.lower()
-        results = [n for n in notes if q in n["title"].lower() or q in n["content"].lower()]
+        from assistant.agent.db import note_search
+        results = note_search(query)
         if not results:
             return f"没有找到包含 '{query}' 的笔记。"
-        lines = [f"[{n['id']}] {n['title']}: {n['content'][:80]}..." for n in results]
+        lines = [f"[{n['id']}] {n['title']}: {str(n['content'])[:80]}..." for n in results]
         return "\n".join(lines)
 
     def _delete_note(self, note_id: int) -> str:
-        notes = self._load()
-        original_len = len(notes)
-        notes = [n for n in notes if n["id"] != note_id]
-        if len(notes) == original_len:
-            return f"未找到 ID 为 {note_id} 的笔记。"
-        self._save(notes)
-        return f"笔记 {note_id} 已删除。"
+        from assistant.agent.db import note_delete
+        if note_delete(note_id):
+            return f"笔记 {note_id} 已删除。"
+        return f"未找到 ID 为 {note_id} 的笔记。"
 
 
 register(NoteSkill)

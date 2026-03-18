@@ -89,6 +89,82 @@ CREATE TABLE IF NOT EXISTS `memory_lessons` (
     INDEX `idx_category` (`category`),
     FULLTEXT INDEX `idx_content` (`title`, `content`, `tags`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='经验教训 (知识层)';
+
+CREATE TABLE IF NOT EXISTS `app_notes` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT,
+    `user_id` VARCHAR(100) NOT NULL DEFAULT '' COMMENT '创建者QQ号',
+    `title` VARCHAR(200) NOT NULL COMMENT '标题',
+    `content` TEXT NOT NULL COMMENT '内容',
+    `tags` VARCHAR(500) DEFAULT '' COMMENT '标签, 逗号分隔',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    INDEX `idx_user` (`user_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='笔记';
+
+CREATE TABLE IF NOT EXISTS `app_contacts_users` (
+    `qq` VARCHAR(50) NOT NULL COMMENT 'QQ号',
+    `name` VARCHAR(100) DEFAULT '' COMMENT '自定义名称',
+    `nickname` VARCHAR(100) DEFAULT '' COMMENT 'QQ昵称(自动)',
+    `first_seen` DATETIME DEFAULT CURRENT_TIMESTAMP,
+    `last_seen` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `msg_count` INT DEFAULT 0,
+    PRIMARY KEY (`qq`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户通讯录';
+
+CREATE TABLE IF NOT EXISTS `app_contacts_groups` (
+    `group_id` VARCHAR(50) NOT NULL COMMENT '群号',
+    `name` VARCHAR(100) DEFAULT '' COMMENT '自定义名称',
+    `group_name` VARCHAR(100) DEFAULT '' COMMENT 'QQ群名(自动)',
+    `first_seen` DATETIME DEFAULT CURRENT_TIMESTAMP,
+    `last_seen` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `msg_count` INT DEFAULT 0,
+    PRIMARY KEY (`group_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='群通讯录';
+
+CREATE TABLE IF NOT EXISTS `app_reminders` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT,
+    `message` VARCHAR(500) NOT NULL COMMENT '提醒内容',
+    `target_time` DATETIME NOT NULL COMMENT '目标时间',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `triggered` TINYINT DEFAULT 0 COMMENT '是否已触发',
+    `notify_qq` VARCHAR(50) DEFAULT '' COMMENT '通知QQ号',
+    `notify_group_id` VARCHAR(50) DEFAULT '' COMMENT '通知群号',
+    PRIMARY KEY (`id`),
+    INDEX `idx_pending` (`triggered`, `target_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='定时提醒';
+
+CREATE TABLE IF NOT EXISTS `app_monitor_sites` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT,
+    `url` VARCHAR(500) NOT NULL COMMENT '网站地址',
+    `name` VARCHAR(200) DEFAULT '' COMMENT '站点名称',
+    `notify_qq` VARCHAR(50) DEFAULT '' COMMENT '通知QQ号',
+    `status` VARCHAR(20) DEFAULT 'unknown' COMMENT 'unknown/up/down',
+    `fail_count` INT DEFAULT 0,
+    `last_check` DATETIME DEFAULT NULL,
+    `last_status_code` INT DEFAULT 0,
+    `last_error` VARCHAR(500) DEFAULT '',
+    `down_since` DATETIME DEFAULT NULL,
+    PRIMARY KEY (`id`),
+    UNIQUE INDEX `idx_url` (`url`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='网站监控';
+
+CREATE TABLE IF NOT EXISTS `app_github_watches` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT,
+    `repo` VARCHAR(300) NOT NULL COMMENT '仓库全名 owner/repo',
+    `branch` VARCHAR(100) NOT NULL DEFAULT 'main' COMMENT '监控分支',
+    `notify_qq` VARCHAR(50) DEFAULT '' COMMENT '通知QQ号',
+    `last_commit_sha` VARCHAR(100) DEFAULT '' COMMENT '最后已知提交SHA',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    UNIQUE INDEX `idx_repo_branch` (`repo`, `branch`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='GitHub仓库监控';
+
+CREATE TABLE IF NOT EXISTS `app_news_state` (
+    `key_name` VARCHAR(100) NOT NULL COMMENT '状态键',
+    `value` VARCHAR(500) NOT NULL DEFAULT '' COMMENT '状态值',
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`key_name`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='新闻推送状态';
 """
 
 
@@ -392,3 +468,395 @@ def load_rules_text() -> str:
         return ""
     lines = [f"{i+1}. {r['title']}: {r['content']}" for i, r in enumerate(rules)]
     return "【小彩云守则】你必须严格遵守以下守则:\n" + "\n".join(lines)
+
+
+# ============================================================
+# 笔记
+# ============================================================
+def note_create(title: str, content: str, tags: str = "", user_id: str = "") -> int:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO app_notes (user_id, title, content, tags) VALUES (%s,%s,%s,%s)",
+                (user_id, title, content, tags),
+            )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def note_list(user_id: str = "", tag: str = "") -> list[dict]:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            conds, params = [], []
+            if user_id:
+                conds.append("user_id = %s")
+                params.append(user_id)
+            if tag:
+                conds.append("FIND_IN_SET(%s, tags) > 0")
+                params.append(tag)
+            where = " AND ".join(conds) if conds else "1=1"
+            cur.execute(
+                f"SELECT id, title, content, tags, created_at FROM app_notes "
+                f"WHERE {where} ORDER BY id DESC LIMIT 100",
+                params,
+            )
+            return list(cur.fetchall())
+    finally:
+        conn.close()
+
+
+def note_search(query: str) -> list[dict]:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            like = f"%{query}%"
+            cur.execute(
+                "SELECT id, title, content, tags, created_at FROM app_notes "
+                "WHERE title LIKE %s OR content LIKE %s ORDER BY id DESC LIMIT 50",
+                (like, like),
+            )
+            return list(cur.fetchall())
+    finally:
+        conn.close()
+
+
+def note_delete(note_id: int) -> bool:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM app_notes WHERE id = %s", (note_id,))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+# ============================================================
+# 通讯录 - 用户
+# ============================================================
+def contact_upsert_user(qq: str, nickname: str = "", name: str = ""):
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO app_contacts_users (qq, nickname, name, msg_count) "
+                "VALUES (%s, %s, %s, 1) "
+                "ON DUPLICATE KEY UPDATE "
+                "nickname = IF(%s != '', %s, nickname), "
+                "name = IF(%s != '', %s, name), "
+                "msg_count = msg_count + 1, "
+                "last_seen = NOW()",
+                (qq, nickname, name, nickname, nickname, name, name),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def contact_set_user_name(qq: str, name: str):
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO app_contacts_users (qq, name) VALUES (%s, %s) "
+                "ON DUPLICATE KEY UPDATE name = %s",
+                (qq, name, name),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def contact_get_users() -> list[dict]:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM app_contacts_users ORDER BY last_seen DESC")
+            return list(cur.fetchall())
+    finally:
+        conn.close()
+
+
+def contact_get_user(qq: str) -> dict | None:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM app_contacts_users WHERE qq = %s", (qq,))
+            return cur.fetchone()
+    finally:
+        conn.close()
+
+
+def contact_get_user_display_name(qq: str) -> str:
+    """获取用户显示名称: 优先自定义名 > QQ昵称 > 空"""
+    u = contact_get_user(qq)
+    if not u:
+        return ""
+    return u.get("name") or u.get("nickname") or ""
+
+
+# ============================================================
+# 通讯录 - 群
+# ============================================================
+def contact_upsert_group(group_id: str, group_name: str = "", name: str = ""):
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO app_contacts_groups (group_id, group_name, name, msg_count) "
+                "VALUES (%s, %s, %s, 1) "
+                "ON DUPLICATE KEY UPDATE "
+                "group_name = IF(%s != '', %s, group_name), "
+                "name = IF(%s != '', %s, name), "
+                "msg_count = msg_count + 1, "
+                "last_seen = NOW()",
+                (group_id, group_name, name, group_name, group_name, name, name),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def contact_set_group_name(group_id: str, name: str):
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO app_contacts_groups (group_id, name) VALUES (%s, %s) "
+                "ON DUPLICATE KEY UPDATE name = %s",
+                (group_id, name, name),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def contact_get_groups() -> list[dict]:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM app_contacts_groups ORDER BY last_seen DESC")
+            return list(cur.fetchall())
+    finally:
+        conn.close()
+
+
+# ============================================================
+# 提醒
+# ============================================================
+def reminder_create(message: str, target_time: str, notify_qq: str = "",
+                    notify_group_id: str = "") -> int:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO app_reminders (message, target_time, notify_qq, notify_group_id) "
+                "VALUES (%s, %s, %s, %s)",
+                (message, target_time, notify_qq, notify_group_id),
+            )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def reminder_get_pending() -> list[dict]:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM app_reminders WHERE triggered = 0 AND target_time <= NOW()"
+            )
+            return list(cur.fetchall())
+    finally:
+        conn.close()
+
+
+def reminder_get_all_pending() -> list[dict]:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM app_reminders WHERE triggered = 0 ORDER BY target_time ASC"
+            )
+            return list(cur.fetchall())
+    finally:
+        conn.close()
+
+
+def reminder_mark_triggered(reminder_id: int):
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE app_reminders SET triggered = 1 WHERE id = %s", (reminder_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def reminder_delete(reminder_id: int) -> bool:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM app_reminders WHERE id = %s", (reminder_id,))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+# ============================================================
+# 网站监控
+# ============================================================
+def monitor_add_site(url: str, name: str = "", notify_qq: str = "") -> dict:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO app_monitor_sites (url, name, notify_qq) VALUES (%s, %s, %s) "
+                "ON DUPLICATE KEY UPDATE name = IF(%s != '', %s, name), "
+                "notify_qq = IF(%s != '', %s, notify_qq)",
+                (url, name, notify_qq, name, name, notify_qq, notify_qq),
+            )
+        conn.commit()
+        # 返回刚插入/更新的记录
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM app_monitor_sites WHERE url = %s", (url,))
+            return cur.fetchone() or {}
+    finally:
+        conn.close()
+
+
+def monitor_remove_site(url: str) -> bool:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM app_monitor_sites WHERE url = %s", (url,))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def monitor_get_sites() -> list[dict]:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM app_monitor_sites ORDER BY id ASC")
+            return list(cur.fetchall())
+    finally:
+        conn.close()
+
+
+def monitor_update_site(url: str, **kwargs):
+    """更新监控站点状态字段"""
+    if not kwargs:
+        return
+    conn = get_connection()
+    try:
+        sets = []
+        params = []
+        for k, v in kwargs.items():
+            sets.append(f"`{k}` = %s")
+            params.append(v)
+        params.append(url)
+        with conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE app_monitor_sites SET {', '.join(sets)} WHERE url = %s",
+                params,
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# ============================================================
+# GitHub 仓库监控
+# ============================================================
+def github_watch_add(repo: str, branch: str = "main", notify_qq: str = "") -> dict:
+    """添加/更新一个监控仓库，返回记录"""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO app_github_watches (repo, branch, notify_qq) "
+                "VALUES (%s, %s, %s) "
+                "ON DUPLICATE KEY UPDATE notify_qq = %s",
+                (repo, branch, notify_qq, notify_qq),
+            )
+        conn.commit()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM app_github_watches WHERE repo = %s AND branch = %s",
+                (repo, branch),
+            )
+            return cur.fetchone() or {}
+    finally:
+        conn.close()
+
+
+def github_watch_remove(repo: str) -> bool:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM app_github_watches WHERE repo = %s", (repo,))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def github_watch_list() -> list[dict]:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM app_github_watches ORDER BY id ASC")
+            return list(cur.fetchall())
+    finally:
+        conn.close()
+
+
+def github_watch_update_sha(repo: str, branch: str, sha: str):
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE app_github_watches SET last_commit_sha = %s "
+                "WHERE repo = %s AND branch = %s",
+                (sha, repo, branch),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# ============================================================
+# 新闻推送状态
+# ============================================================
+def news_state_get(key: str) -> str:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT value FROM app_news_state WHERE key_name = %s", (key,))
+            row = cur.fetchone()
+            return row["value"] if row else ""
+    finally:
+        conn.close()
+
+
+def news_state_set(key: str, value: str):
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO app_news_state (key_name, value) VALUES (%s, %s) "
+                "ON DUPLICATE KEY UPDATE value = %s",
+                (key, value, value),
+            )
+        conn.commit()
+    finally:
+        conn.close()

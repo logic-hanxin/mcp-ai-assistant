@@ -5,14 +5,12 @@ GitHub 后台提交检查器
 """
 
 import os
-import json
 import asyncio
-from pathlib import Path
 
 import httpx
 
-GITHUB_DIR = Path.home() / ".ai_assistant" / "github"
-WATCH_FILE = GITHUB_DIR / "watch_repos.json"
+from assistant.agent import db
+
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 NAPCAT_API_URL = os.getenv("NAPCAT_API_URL", "http://127.0.0.1:3000")
 CHECK_INTERVAL = int(os.getenv("GITHUB_CHECK_INTERVAL", "60"))  # 秒
@@ -23,20 +21,6 @@ def _headers() -> dict:
     if GITHUB_TOKEN:
         h["Authorization"] = f"token {GITHUB_TOKEN}"
     return h
-
-
-def _load_watch() -> list[dict]:
-    if WATCH_FILE.exists():
-        try:
-            return json.loads(WATCH_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            return []
-    return []
-
-
-def _save_watch(data: list[dict]):
-    GITHUB_DIR.mkdir(parents=True, exist_ok=True)
-    WATCH_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 async def github_check_loop():
@@ -54,11 +38,13 @@ async def github_check_loop():
 
 async def _check_all_repos():
     """检查所有监控仓库"""
-    repos = _load_watch()
+    try:
+        repos = db.github_watch_list()
+    except Exception:
+        return
     if not repos:
         return
 
-    changed = False
     async with httpx.AsyncClient(timeout=15) as client:
         for repo_config in repos:
             repo = repo_config["repo"]
@@ -83,8 +69,10 @@ async def _check_all_repos():
 
                 # 首次检查，仅记录当前 SHA，不发通知
                 if not last_sha:
-                    repo_config["last_commit_sha"] = latest_sha
-                    changed = True
+                    try:
+                        db.github_watch_update_sha(repo, branch, latest_sha)
+                    except Exception:
+                        pass
                     continue
 
                 # 有新提交
@@ -96,8 +84,10 @@ async def _check_all_repos():
                             break
                         new_commits.append(c)
 
-                    repo_config["last_commit_sha"] = latest_sha
-                    changed = True
+                    try:
+                        db.github_watch_update_sha(repo, branch, latest_sha)
+                    except Exception:
+                        pass
 
                     # 发送 QQ 通知
                     if notify_qq and new_commits:
@@ -105,9 +95,6 @@ async def _check_all_repos():
 
             except Exception:
                 continue
-
-    if changed:
-        _save_watch(repos)
 
 
 async def _notify_new_commits(notify_qq: str, repo: str, branch: str, commits: list[dict]):

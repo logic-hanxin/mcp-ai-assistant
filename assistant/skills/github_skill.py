@@ -1,13 +1,10 @@
 """GitHub 仓库监控 Skill - 管理监控列表、查询分支状态"""
 
 import os
-import json
-from pathlib import Path
 import httpx
 from assistant.skills.base import BaseSkill, ToolDefinition, register
+from assistant.agent import db
 
-GITHUB_DIR = Path.home() / ".ai_assistant" / "github"
-WATCH_FILE = GITHUB_DIR / "watch_repos.json"
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 
 
@@ -18,26 +15,9 @@ def _headers() -> dict:
     return h
 
 
-def _load_watch() -> list[dict]:
-    if WATCH_FILE.exists():
-        try:
-            return json.loads(WATCH_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            return []
-    return []
-
-
-def _save_watch(data: list[dict]):
-    GITHUB_DIR.mkdir(parents=True, exist_ok=True)
-    WATCH_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
 class GitHubSkill(BaseSkill):
     name = "github"
     description = "GitHub 仓库监控，查询分支/提交状态，有新提交时 QQ 通知"
-
-    def on_load(self):
-        GITHUB_DIR.mkdir(parents=True, exist_ok=True)
 
     def get_tools(self) -> list[ToolDefinition]:
         return [
@@ -105,39 +85,31 @@ class GitHubSkill(BaseSkill):
         ]
 
     def _watch_repo(self, repo: str, notify_qq: str, branch: str = "main") -> str:
-        repos = _load_watch()
-        # 检查是否已存在
-        for r in repos:
-            if r["repo"] == repo and r["branch"] == branch:
-                r["notify_qq"] = notify_qq
-                _save_watch(repos)
-                return f"已更新监控: {repo}:{branch} -> 通知 QQ:{notify_qq}"
-
-        repos.append({
-            "repo": repo,
-            "branch": branch,
-            "notify_qq": notify_qq,
-            "last_commit_sha": "",  # 后台检查器会填入
-        })
-        _save_watch(repos)
-        return f"已添加监控: {repo}:{branch}，有新提交会通知 QQ:{notify_qq}"
+        try:
+            db.github_watch_add(repo, branch=branch, notify_qq=notify_qq)
+            return f"已添加监控: {repo}:{branch}，有新提交会通知 QQ:{notify_qq}"
+        except Exception as e:
+            return f"添加监控失败: {e}"
 
     def _unwatch_repo(self, repo: str) -> str:
-        repos = _load_watch()
-        original = len(repos)
-        repos = [r for r in repos if r["repo"] != repo]
-        if len(repos) == original:
+        try:
+            if db.github_watch_remove(repo):
+                return f"已移除 {repo} 的监控。"
             return f"未找到 {repo} 的监控记录。"
-        _save_watch(repos)
-        return f"已移除 {repo} 的监控。"
+        except Exception as e:
+            return f"移除失败: {e}"
 
     def _list_watched(self) -> str:
-        repos = _load_watch()
+        try:
+            repos = db.github_watch_list()
+        except Exception as e:
+            return f"查询失败: {e}"
+
         if not repos:
             return "暂无监控中的仓库。"
         lines = []
         for r in repos:
-            sha = r.get("last_commit_sha", "")[:7] or "未检查"
+            sha = (r.get("last_commit_sha") or "")[:7] or "未检查"
             lines.append(f"  {r['repo']}:{r['branch']}  通知QQ:{r['notify_qq']}  最新:{sha}")
         return "监控列表:\n" + "\n".join(lines)
 

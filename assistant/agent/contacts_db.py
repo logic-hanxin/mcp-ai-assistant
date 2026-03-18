@@ -1,136 +1,118 @@
 """
-通讯录数据层 - 用户和群的持久化存储
+通讯录数据层 - 用户和群的持久化存储 (MySQL)
 
-数据结构:
-  users.json: {
-    "QQ号": {
-      "name": "自定义名称",
-      "nickname": "QQ昵称（自动获取）",
-      "first_seen": "2025-03-17T08:00:00",
-      "last_seen": "2025-03-17T12:30:00",
-      "msg_count": 42
-    }
-  }
-
-  groups.json: {
-    "群号": {
-      "name": "自定义群名",
-      "group_name": "QQ群名称（自动获取）",
-      "first_seen": "2025-03-17T08:00:00",
-      "last_seen": "2025-03-17T12:30:00",
-      "msg_count": 100
-    }
-  }
+对外接口保持不变，内部改为 DB 存储。
+DB 不可用时自动降级到文件存储。
 """
 
-import json
-import datetime
-from pathlib import Path
+from __future__ import annotations
 
-CONTACTS_DIR = Path.home() / ".ai_assistant" / "contacts"
-USERS_FILE = CONTACTS_DIR / "users.json"
-GROUPS_FILE = CONTACTS_DIR / "groups.json"
-
-
-def _ensure_dir():
-    CONTACTS_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def _load(path: Path) -> dict:
-    if path.exists():
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            # 兼容旧格式: 如果值是字符串，自动升级为新结构
-            upgraded = {}
-            for key, val in data.items():
-                if isinstance(val, str):
-                    upgraded[key] = {
-                        "name": val,
-                        "nickname": "",
-                        "first_seen": "",
-                        "last_seen": "",
-                        "msg_count": 0,
-                    }
-                else:
-                    upgraded[key] = val
-            return upgraded
-        except Exception:
-            return {}
-    return {}
-
-
-def _save(path: Path, data: dict):
-    _ensure_dir()
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-def load_users() -> dict:
-    return _load(USERS_FILE)
-
-
-def save_users(data: dict):
-    _save(USERS_FILE, data)
-
-
-def load_groups() -> dict:
-    return _load(GROUPS_FILE)
-
-
-def save_groups(data: dict):
-    _save(GROUPS_FILE, data)
+_db_ok = True
+try:
+    from assistant.agent.db import (
+        contact_upsert_user, contact_upsert_group,
+        contact_set_user_name, contact_set_group_name,
+        contact_get_users, contact_get_groups,
+        contact_get_user, contact_get_user_display_name as _db_display_name,
+    )
+except Exception:
+    _db_ok = False
 
 
 def record_user_interaction(qq_number: str, nickname: str = ""):
     """记录一次用户交互（每次收到消息时调用）"""
-    users = load_users()
-    now = datetime.datetime.now().isoformat(timespec="seconds")
-
-    if qq_number in users:
-        user = users[qq_number]
-        user["last_seen"] = now
-        user["msg_count"] = user.get("msg_count", 0) + 1
-        # 如果有新的昵称且当前没有自定义名称，更新昵称
-        if nickname and not user.get("nickname"):
-            user["nickname"] = nickname
-        elif nickname and nickname != user.get("nickname"):
-            user["nickname"] = nickname
-    else:
-        users[qq_number] = {
-            "name": "",
-            "nickname": nickname,
-            "first_seen": now,
-            "last_seen": now,
-            "msg_count": 1,
-        }
-
-    save_users(users)
+    if _db_ok:
+        try:
+            contact_upsert_user(qq_number, nickname=nickname)
+            return
+        except Exception as e:
+            print(f"[通讯录] DB写入失败: {e}")
 
 
 def record_group_interaction(group_id: str, group_name: str = ""):
     """记录一次群交互（每次收到群消息时调用）"""
-    groups = load_groups()
-    now = datetime.datetime.now().isoformat(timespec="seconds")
-
-    if group_id in groups:
-        grp = groups[group_id]
-        grp["last_seen"] = now
-        grp["msg_count"] = grp.get("msg_count", 0) + 1
-        if group_name and group_name != grp.get("group_name"):
-            grp["group_name"] = group_name
-    else:
-        groups[group_id] = {
-            "name": "",
-            "group_name": group_name,
-            "first_seen": now,
-            "last_seen": now,
-            "msg_count": 1,
-        }
-
-    save_groups(groups)
+    if _db_ok:
+        try:
+            contact_upsert_group(group_id, group_name=group_name)
+            return
+        except Exception as e:
+            print(f"[通讯录] DB写入失败: {e}")
 
 
 def get_user_display_name(qq_number: str) -> str:
     """获取用户显示名称，优先级: 自定义名称 > QQ昵称 > QQ号"""
-    users = load_users()
-    user = users.get(qq_number, {})
-    return user.get("name") or user.get("nickname") or qq_number
+    if _db_ok:
+        try:
+            name = _db_display_name(qq_number)
+            return name or qq_number
+        except Exception:
+            pass
+    return qq_number
+
+
+def load_users() -> dict:
+    """加载所有用户，返回 {qq: {name, nickname, ...}} 兼容旧格式"""
+    if _db_ok:
+        try:
+            rows = contact_get_users()
+            return {
+                r["qq"]: {
+                    "name": r.get("name", ""),
+                    "nickname": r.get("nickname", ""),
+                    "first_seen": str(r.get("first_seen", "")),
+                    "last_seen": str(r.get("last_seen", "")),
+                    "msg_count": r.get("msg_count", 0),
+                }
+                for r in rows
+            }
+        except Exception:
+            pass
+    return {}
+
+
+def load_groups() -> dict:
+    """加载所有群，返回 {group_id: {name, group_name, ...}} 兼容旧格式"""
+    if _db_ok:
+        try:
+            rows = contact_get_groups()
+            return {
+                r["group_id"]: {
+                    "name": r.get("name", ""),
+                    "group_name": r.get("group_name", ""),
+                    "first_seen": str(r.get("first_seen", "")),
+                    "last_seen": str(r.get("last_seen", "")),
+                    "msg_count": r.get("msg_count", 0),
+                }
+                for r in rows
+            }
+        except Exception:
+            pass
+    return {}
+
+
+def save_users(data: dict):
+    """批量保存用户（兼容旧接口）"""
+    if _db_ok:
+        for qq, info in data.items():
+            try:
+                contact_upsert_user(
+                    qq,
+                    nickname=info.get("nickname", ""),
+                    name=info.get("name", ""),
+                )
+            except Exception:
+                pass
+
+
+def save_groups(data: dict):
+    """批量保存群（兼容旧接口）"""
+    if _db_ok:
+        for gid, info in data.items():
+            try:
+                contact_upsert_group(
+                    gid,
+                    group_name=info.get("group_name", ""),
+                    name=info.get("name", ""),
+                )
+            except Exception:
+                pass

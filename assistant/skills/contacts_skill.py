@@ -1,9 +1,11 @@
 """通讯录 Skill - QQ号关联用户名、群号关联群名"""
 
+from __future__ import annotations
+
 from assistant.skills.base import BaseSkill, ToolDefinition, register
 from assistant.agent.contacts_db import (
     load_users, save_users, load_groups, save_groups,
-    get_user_display_name, _ensure_dir,
+    get_user_display_name,
 )
 
 
@@ -12,7 +14,7 @@ class ContactsSkill(BaseSkill):
     description = "通讯录管理，QQ号关联用户名、群号关联群名，自动记录交流对象"
 
     def on_load(self):
-        _ensure_dir()
+        pass
 
     def get_tools(self) -> list[ToolDefinition]:
         return [

@@ -13,6 +13,10 @@ _project_root = str(Path(__file__).resolve().parent.parent.parent)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
+# MCP Server 作为子进程运行，需要自行加载 .env
+from dotenv import load_dotenv
+load_dotenv()
+
 from mcp.server.fastmcp import FastMCP
 from assistant.skills.base import discover_and_load_skills
 

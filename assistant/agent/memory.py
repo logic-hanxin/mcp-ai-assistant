@@ -1,15 +1,20 @@
 """
-Memory - 长期记忆模块
+Memory - 分层记忆模块
 
-功能:
-- 会话内短期记忆（对话历史）
-- 跨会话长期记忆（持久化到磁盘）
-- 对话摘要压缩（超长对话自动摘要，避免 token 溢出）
+记忆分层:
+- 短期记忆: 当前会话消息 (内存 + DB 双写)
+- 压缩摘要: 超长对话自动摘要，持久化到 DB
+- 用户事实: 偏好/个人信息，按 user_id 隔离持久化
+- 经验教训: 跨用户共享的知识 (通过 db.py 直接操作)
+
+每个 Memory 实例绑定一个 session_id (通常为QQ号)，
+服务重启后可从数据库恢复上下文。
 """
 
+from __future__ import annotations
+
 import json
-import datetime
-from pathlib import Path
+import traceback
 from typing import Optional
 
 
@@ -95,32 +100,77 @@ def _find_safe_cut(messages: list[dict], target_cut: int) -> int:
 
 
 class Memory:
-    """Agent 记忆系统"""
+    """分层记忆系统 (MySQL 持久化)"""
 
-    def __init__(self, storage_dir: Optional[Path] = None, max_short_term: int = 30):
-        self.storage_dir = storage_dir or (Path.home() / ".ai_assistant" / "memory")
-        self.storage_dir.mkdir(parents=True, exist_ok=True)
+    def __init__(self, session_id: str = "default", user_id: Optional[str] = None,
+                 max_short_term: int = 30):
+        self.session_id = session_id
+        self.user_id = user_id or session_id
         self.max_short_term = max_short_term
 
-        # 短期记忆 (当前会话)
+        # 短期记忆 (当前会话，内存中)
         self.short_term: list[dict] = []
 
-        # 长期记忆文件
-        self._summaries_file = self.storage_dir / "summaries.json"
-        self._facts_file = self.storage_dir / "user_facts.json"
-        self._history_file = self.storage_dir / "history.json"
+        # 标记 DB 是否可用
+        self._db_available = False
+        self._init_db()
+
+    def _init_db(self):
+        """尝试初始化 DB 连接并恢复上下文"""
+        try:
+            from assistant.agent.db import load_recent_messages, load_summaries
+            self._db_available = True
+
+            # 恢复上一次会话的消息
+            restored = load_recent_messages(self.session_id, limit=self.max_short_term)
+            if restored:
+                self.short_term = restored
+                print(f"[Memory] 从 DB 恢复了 {len(restored)} 条消息 (session={self.session_id})")
+
+                # 加载最近的摘要作为上下文前缀
+                summaries = load_summaries(self.session_id, limit=2)
+                if summaries:
+                    summary_text = " | ".join(s["summary"] for s in summaries)
+                    # 在消息列表前面插入摘要上下文
+                    self.short_term.insert(0, {
+                        "role": "system",
+                        "content": f"[历史对话摘要] {summary_text}"
+                    })
+                    print(f"[Memory] 加载了 {len(summaries)} 条历史摘要")
+        except Exception as e:
+            print(f"[Memory] DB 不可用，使用纯内存模式: {e}")
+            traceback.print_exc()
+            self._db_available = False
 
     # ----------------------------------------------------------
     # 短期记忆
     # ----------------------------------------------------------
     def add_message(self, role: str, content: str, **extra):
-        """添加一条消息到短期记忆"""
+        """添加一条消息到短期记忆 + DB 持久化"""
         msg = {"role": role, "content": content, **extra}
         self.short_term.append(msg)
+        self._persist_message(msg)
 
     def add_raw_message(self, msg: dict):
         """添加原始消息 dict"""
         self.short_term.append(msg)
+        self._persist_message(msg)
+
+    def _persist_message(self, msg: dict):
+        """将消息写入 DB"""
+        if not self._db_available:
+            return
+        try:
+            from assistant.agent.db import save_message
+            save_message(
+                session_id=self.session_id,
+                role=msg.get("role", ""),
+                content=msg.get("content"),
+                tool_calls=msg.get("tool_calls"),
+                tool_call_id=msg.get("tool_call_id"),
+            )
+        except Exception as e:
+            print(f"[Memory] DB 写入失败: {e}")
 
     def get_messages(self) -> list[dict]:
         """获取短期记忆中的所有消息（确保 tool_calls/tool 配对完整）"""
@@ -145,80 +195,88 @@ class Memory:
         old_messages = self.short_term[:cut]
         recent = self.short_term[cut:]
 
-        # 保存摘要到长期记忆
+        # 保存摘要到 DB
         if old_messages:
-            self._save_summary(summary)
+            self._save_summary(summary, len(old_messages))
 
         # 用摘要替换旧消息
         self.short_term = [
             {"role": "system", "content": f"[历史对话摘要] {summary}"}
         ] + recent
 
+        # 清理 DB 中的旧消息，只保留最近的
+        if self._db_available:
+            try:
+                from assistant.agent.db import delete_old_messages
+                deleted = delete_old_messages(self.session_id, keep_recent=keep_recent)
+                if deleted:
+                    print(f"[Memory] 清理了 DB 中 {deleted} 条旧消息")
+            except Exception as e:
+                print(f"[Memory] DB 清理失败: {e}")
+
     # ----------------------------------------------------------
-    # 长期记忆 - 对话摘要
+    # 对话摘要
     # ----------------------------------------------------------
-    def _save_summary(self, summary: str):
-        summaries = self._load_json(self._summaries_file)
-        summaries.append({
-            "summary": summary,
-            "timestamp": datetime.datetime.now().isoformat(),
-        })
-        # 只保留最近20条摘要
-        summaries = summaries[-20:]
-        self._save_json(self._summaries_file, summaries)
+    def _save_summary(self, summary: str, message_count: int = 0):
+        if not self._db_available:
+            return
+        try:
+            from assistant.agent.db import save_summary
+            save_summary(self.session_id, summary, message_count)
+        except Exception as e:
+            print(f"[Memory] 摘要保存失败: {e}")
 
     def get_summaries(self) -> list[dict]:
-        return self._load_json(self._summaries_file)
+        if not self._db_available:
+            return []
+        try:
+            from assistant.agent.db import load_summaries
+            return load_summaries(self.session_id)
+        except Exception:
+            return []
 
     # ----------------------------------------------------------
-    # 长期记忆 - 用户偏好/事实
+    # 用户偏好/事实
     # ----------------------------------------------------------
     def save_fact(self, key: str, value: str):
         """保存用户偏好或事实，如 '用户名: 小明', '偏好语言: 中文'"""
-        facts = self._load_json(self._facts_file)
-        facts[key] = {"value": value, "updated_at": datetime.datetime.now().isoformat()}
-        self._save_json(self._facts_file, facts)
+        if not self._db_available:
+            return
+        try:
+            from assistant.agent.db import save_fact
+            save_fact(self.user_id, key, value)
+        except Exception as e:
+            print(f"[Memory] 事实保存失败: {e}")
 
     def get_facts(self) -> dict:
-        return self._load_json(self._facts_file)
+        if not self._db_available:
+            return {}
+        try:
+            from assistant.agent.db import load_facts
+            return load_facts(self.user_id)
+        except Exception:
+            return {}
 
     def get_facts_prompt(self) -> str:
         """将用户事实格式化为 system prompt 片段"""
         facts = self.get_facts()
         if not facts:
             return ""
-        lines = [f"- {k}: {v['value']}" for k, v in facts.items()]
+        lines = [f"- {k}: {v}" for k, v in facts.items()]
         return "已知的用户信息:\n" + "\n".join(lines)
 
     # ----------------------------------------------------------
-    # 会话历史持久化
+    # 会话管理
     # ----------------------------------------------------------
     def save_session(self):
-        """将当前会话保存到历史"""
-        if not self.short_term:
-            return
-        history = self._load_json(self._history_file)
-        history.append({
-            "messages": self.short_term,
-            "timestamp": datetime.datetime.now().isoformat(),
-        })
-        # 保留最近50个会话
-        history = history[-50:]
-        self._save_json(self._history_file, history)
+        """会话保存（DB 模式下消息已实时持久化，此方法保持兼容）"""
+        pass
 
     def clear_short_term(self):
         self.short_term.clear()
-
-    # ----------------------------------------------------------
-    # 工具函数
-    # ----------------------------------------------------------
-    def _load_json(self, path: Path):
-        if path.exists():
+        if self._db_available:
             try:
-                return json.loads(path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, Exception):
-                return [] if path.name != "user_facts.json" else {}
-        return [] if path.name != "user_facts.json" else {}
-
-    def _save_json(self, path: Path, data):
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+                from assistant.agent.db import clear_session_messages
+                clear_session_messages(self.session_id)
+            except Exception as e:
+                print(f"[Memory] 清空会话失败: {e}")

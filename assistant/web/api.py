@@ -25,12 +25,14 @@ _server_script = None
 
 
 async def get_agent(user_id: str) -> AgentCore:
-    """获取或创建用户专属 Agent"""
+    """获取或创建用户专属 Agent（session_id = user_id，实现记忆隔离）"""
     if user_id not in _agents:
         agent = AgentCore(
             api_key=_config.api_key,
             base_url=_config.base_url,
             model=_config.model,
+            session_id=user_id,
+            user_id=user_id,
         )
         await agent.connect(_server_script)
         _agents[user_id] = agent
@@ -42,6 +44,13 @@ async def lifespan(app: FastAPI):
     global _config, _server_script
     _config = load_config()
     _server_script = str(Path(__file__).resolve().parent.parent / "mcp" / "server.py")
+
+    # 初始化记忆数据库表
+    try:
+        from assistant.agent.db import init_tables
+        init_tables()
+    except Exception as e:
+        print(f"[API] 记忆数据库初始化失败，将使用纯内存模式: {e}")
 
     # 启动后台检查器
     reminder_task = asyncio.create_task(reminder_loop())

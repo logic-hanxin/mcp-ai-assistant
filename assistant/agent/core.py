@@ -63,11 +63,12 @@ SYSTEM_PROMPT = """你是「美萌robot」，一个活泼可爱的私人AI助手
 class AgentCore:
     """高级 Agent 核心"""
 
-    def __init__(self, api_key: str, base_url: str, model: str):
+    def __init__(self, api_key: str, base_url: str, model: str,
+                 session_id: str = "default", user_id: str = None):
         self.llm_client = OpenAI(api_key=api_key, base_url=base_url)
         self.model = model
         self.mcp = MCPClient()
-        self.memory = Memory()
+        self.memory = Memory(session_id=session_id, user_id=user_id or session_id)
         self.planner = Planner(self.llm_client, self.model)
         self.reflection = Reflection(self.llm_client, self.model)
         # 会话上下文 (QQ号、群号等，由外部注入)

@@ -20,47 +20,65 @@ from typing import Optional
 
 def _sanitize_messages(messages: list[dict]) -> list[dict]:
     """
-    清理消息列表，确保 tool_calls / tool 配对完整。
-    规则:
-    - role=tool 的消息，前面必须有一条包含 tool_calls 的 assistant 消息
-    - 如果发现孤立的 tool 消息（前面没有 tool_calls），直接丢弃
-    - 如果 assistant 有 tool_calls 但后面缺少对应的 tool 响应，也丢弃该 assistant 消息
+    清理消息列表，确保 tool_calls / tool 配对完整且相邻。
+
+    OpenAI API 要求:
+    - assistant(tool_calls) 之后必须紧跟对应的 tool 消息
+    - 中间不能插入其他消息
+
+    处理策略:
+    1. 先找出所有完整配对的 tool_call 组（assistant + 所有 tool 响应）
+    2. 把 tool 响应从原位置提取出来，紧跟在对应的 assistant 后面输出
+    3. 不完整的配对整组丢弃
     """
-    result = []
-    # 收集所有有效的 tool_call_id
-    valid_tc_ids = set()
-    for msg in messages:
+    # 第一步: 索引所有 tool_call_id → 对应的 assistant 消息索引
+    tc_id_to_assistant_idx = {}
+    assistant_tc_ids = {}  # assistant_idx → [tc_id, ...]
+    for i, msg in enumerate(messages):
         if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            ids = []
             for tc in msg["tool_calls"]:
                 tc_id = tc.get("id", "")
                 if tc_id:
-                    valid_tc_ids.add(tc_id)
+                    tc_id_to_assistant_idx[tc_id] = i
+                    ids.append(tc_id)
+            assistant_tc_ids[i] = ids
 
-    # 第一遍: 找出实际有 tool 响应的 tool_call_id
-    responded_tc_ids = set()
-    for msg in messages:
+    # 第二步: 收集所有 tool 响应，按 assistant 索引分组
+    tool_responses = {}  # assistant_idx → [tool_msg, ...]
+    tool_msg_indices = set()  # 记录哪些消息是 tool 响应（后面跳过）
+    for i, msg in enumerate(messages):
         if msg.get("role") == "tool":
             tc_id = msg.get("tool_call_id", "")
-            if tc_id in valid_tc_ids:
-                responded_tc_ids.add(tc_id)
+            ast_idx = tc_id_to_assistant_idx.get(tc_id)
+            if ast_idx is not None:
+                tool_responses.setdefault(ast_idx, []).append(msg)
+                tool_msg_indices.add(i)
 
-    # 第二遍: 构建干净的消息列表
-    for msg in messages:
+    # 第三步: 判断哪些 assistant(tool_calls) 是完整配对的
+    complete_assistants = set()
+    for ast_idx, tc_ids in assistant_tc_ids.items():
+        responses = tool_responses.get(ast_idx, [])
+        responded_ids = {m.get("tool_call_id", "") for m in responses}
+        if all(tc_id in responded_ids for tc_id in tc_ids):
+            complete_assistants.add(ast_idx)
+
+    # 第四步: 构建结果，确保 tool 响应紧跟 assistant
+    result = []
+    for i, msg in enumerate(messages):
         role = msg.get("role", "")
 
-        if role == "tool":
-            tc_id = msg.get("tool_call_id", "")
-            if tc_id in valid_tc_ids:
-                result.append(msg)
-            # 否则丢弃（孤立的 tool 消息）
+        # 跳过已被归组的 tool 消息（后面会跟在 assistant 后面输出）
+        if i in tool_msg_indices:
+            continue
 
-        elif role == "assistant" and msg.get("tool_calls"):
-            # 检查这条 assistant 的所有 tool_calls 是否都有对应的 tool 响应
-            tc_ids = [tc.get("id", "") for tc in msg["tool_calls"]]
-            if all(tc_id in responded_tc_ids for tc_id in tc_ids):
+        if role == "assistant" and msg.get("tool_calls"):
+            if i in complete_assistants:
+                # 完整配对: 输出 assistant + 紧跟所有 tool 响应
                 result.append(msg)
-            # 否则丢弃（tool_calls 没有对应响应的 assistant 消息）
-
+                for tool_msg in tool_responses[i]:
+                    result.append(tool_msg)
+            # 不完整的直接丢弃
         else:
             result.append(msg)
 

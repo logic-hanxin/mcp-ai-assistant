@@ -9,7 +9,7 @@ from assistant.skills.base import BaseSkill, ToolDefinition, register
 
 # 数据库表结构摘要，供 LLM 生成 SQL 时参考
 DB_SCHEMA = """
-数据库: dangan (Django 应用 - 社团/协会管理系统)
+数据库: useinfo (Django 应用 - 社团/协会管理系统)
 
 核心业务表:
 - profiles_profile: 用户档案(id, name, student_id, phone, major, college, gender, age, department, position, service_hours, cloud_coins, activity_count, bio, birthday, avatar, user_id→auth_user)
@@ -66,7 +66,7 @@ def _get_connection() -> pymysql.Connection:
         port=int(os.getenv("DB_PORT", "3306")),
         user=os.getenv("DB_USER", "root"),
         password=os.getenv("DB_PASSWORD", ""),
-        database=os.getenv("DB_NAME", "dangan"),
+        database=os.getenv("DB_NAME", "useinfo"),
         charset="utf8mb4",
         connect_timeout=5,
         read_timeout=10,

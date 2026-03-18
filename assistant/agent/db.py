@@ -335,3 +335,60 @@ def search_lessons(keyword: str = "", category: str = "", limit: int = 5) -> lis
             return cur.fetchall()
     finally:
         conn.close()
+
+
+# ============================================================
+# 小彩云守则
+# ============================================================
+def save_rule(title: str, content: str) -> int:
+    """保存一条守则，返回 ID"""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO memory_lessons (category, title, content, severity) "
+                "VALUES ('rule', %s, %s, 3)",
+                (title, content),
+            )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def load_rules() -> list[dict]:
+    """加载所有守则"""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, title, content, created_at FROM memory_lessons "
+                "WHERE category = 'rule' ORDER BY id ASC"
+            )
+            return list(cur.fetchall())
+    finally:
+        conn.close()
+
+
+def delete_rule(rule_id: int) -> bool:
+    """删除一条守则，返回是否成功"""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM memory_lessons WHERE id = %s AND category = 'rule'",
+                (rule_id,),
+            )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def load_rules_text() -> str:
+    """加载守则并格式化为文本，供注入 system prompt"""
+    rules = load_rules()
+    if not rules:
+        return ""
+    lines = [f"{i+1}. {r['title']}: {r['content']}" for i, r in enumerate(rules)]
+    return "【小彩云守则】你必须严格遵守以下守则:\n" + "\n".join(lines)

@@ -1,4 +1,4 @@
-"""数据库查询 Skill - 查询 MySQL 数据库"""
+"""数据库查询 Skill - 动态发现表结构并查询 MySQL 数据库"""
 
 from __future__ import annotations
 
@@ -6,57 +6,6 @@ import os
 
 import pymysql
 from assistant.skills.base import BaseSkill, ToolDefinition, register
-
-# 数据库表结构摘要，供 LLM 生成 SQL 时参考
-DB_SCHEMA = """
-数据库: useinfo (Django 应用 - 社团/协会管理系统)
-
-核心业务表:
-- profiles_profile: 用户档案(id, name, student_id, phone, major, college, gender, age, department, position, service_hours, cloud_coins, activity_count, bio, birthday, avatar, user_id→auth_user)
-- auth_user: 系统用户(id, username, email, is_superuser, is_staff, is_active, date_joined, last_login)
-- department_department: 部门(id, name, description) — name值: organization/propaganda/finance/operation/secretariat/external
-- department_member: 部门成员(id, name, student_id, phone, position_id→department_position, is_active, join_date)
-- department_position: 职位(id, name, description, order, department_id→department_department) — name值: minister/vice_minister/member
-- department_executivecommittee: 主席团(id, name, description)
-- department_executivemember: 主席团成员(id, name, student_id, phone, position, is_active)
-
-活动相关:
-- activity_activity: 活动(id, title, description, start_time, end_time, credit_hours)
-- events_activity: 活动扩展(id, title, description, start_time, end_time, location, max_participants, status, category, created_by_id→auth_user)
-- events_activityregistration: 活动报名(id, activity_id→events_activity, user_id→auth_user, status, registered_at)
-- profiles_servicehourapplication: 服务时长申请
-
-财务:
-- finance_financerecord: 财务记录(id, title, amount, category, record_type, date, description)
-- finance_reimbursement: 报销申请(id, title, amount, status, applicant_id→auth_user)
-
-聊天:
-- chat_chatroom: 聊天室(id, name, room_type, created_at)
-- chat_privatemessage: 私信(id, content, sender_id, receiver_id, timestamp)
-- chat_roommessage: 群消息(id, content, sender_id, room_id, timestamp)
-
-评审/比赛:
-- judging_contest: 比赛(id, name, description, status, start_time, end_time)
-- judging_contestant: 参赛者
-- judging_score: 评分
-- video_contest_videocontestsubmission: 视频比赛投稿
-
-OKR:
-- okr_okrperiod: OKR周期(id, name, start_date, end_date)
-- okr_objective: 目标(id, title, description, progress, period_id, owner_id)
-- okr_keyresult: 关键结果(id, title, progress, objective_id)
-- okr_task: 任务(id, title, status, key_result_id)
-
-其他:
-- book_bookcategory / book_bookupload: 图书
-- shop_product / shop_exchangerecord: 积分商城
-- streaming_livestream: 直播
-- video_coursevideo: 课程视频
-- resume: 简历
-- interview_interviewevaluation / interview_note: 面试
-- qq_bot_qquserbinding / qq_bot_qqchatlog: QQ机器人
-- volunteer_teaching_volunteerlocation / volunteer_teaching_volunteerreview: 志愿支教
-""".strip()
 
 
 def _get_connection() -> pymysql.Connection:
@@ -118,12 +67,51 @@ class SqlSkill(BaseSkill):
     def get_tools(self) -> list[ToolDefinition]:
         return [
             ToolDefinition(
+                name="list_tables",
+                description=(
+                    "【第1步】列出数据库中所有的表。"
+                    "查询数据库时必须先调用此工具，看看有哪些表可用，"
+                    "再决定查哪张表。可按关键词过滤。"
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "keyword": {
+                            "type": "string",
+                            "description": "可选，按关键词过滤表名（如 'user'、'finance'、'activity'）",
+                        },
+                    },
+                },
+                handler=self._list_tables,
+            ),
+            ToolDefinition(
+                name="get_table_schema",
+                description=(
+                    "【第2步】查看指定表的字段结构（字段名、类型、注释、外键关系）。"
+                    "在构造 SQL 之前必须先调用此工具了解表有哪些字段、每个字段的含义，"
+                    "不要凭猜测写 SQL。"
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "table_name": {
+                            "type": "string",
+                            "description": "表名，如 auth_user、finance_financerecord 等",
+                        },
+                    },
+                    "required": ["table_name"],
+                },
+                handler=self._get_table_schema,
+            ),
+            ToolDefinition(
                 name="query_database",
                 description=(
-                    "执行 SQL 查询语句来查询社团管理系统数据库(dangan)。"
-                    "只允许 SELECT/SHOW/DESCRIBE 查询，不可修改数据。"
-                    "可查询用户档案、部门成员、活动报名、财务记录、OKR等信息。\n\n"
-                    f"数据库结构:\n{DB_SCHEMA}"
+                    "【第3步】执行 SQL 查询语句。只允许 SELECT/SHOW/DESCRIBE 查询，不可修改数据。\n\n"
+                    "重要：在执行查询前，你必须已经完成：\n"
+                    "1. 调用 list_tables 找到相关的表\n"
+                    "2. 调用 get_table_schema 查看表的字段和含义\n"
+                    "3. 根据真实字段信息构造正确的 SQL\n"
+                    "禁止跳过前两步直接查询。"
                 ),
                 parameters={
                     "type": "object",
@@ -137,34 +125,82 @@ class SqlSkill(BaseSkill):
                 },
                 handler=self._query_database,
             ),
-            ToolDefinition(
-                name="get_table_schema",
-                description="获取指定表的结构信息（字段名、类型等），帮助了解表结构后再编写查询。",
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "table_name": {
-                            "type": "string",
-                            "description": "表名，如 profiles_profile、auth_user、department_member 等",
-                        },
-                    },
-                    "required": ["table_name"],
-                },
-                handler=self._get_table_schema,
-            ),
         ]
 
-    def _query_database(self, sql: str) -> str:
-        if not sql.strip():
-            return "请提供 SQL 查询语句。"
-        return _execute_query(sql)
+    def _list_tables(self, keyword: str = "") -> str:
+        conn = _get_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("SHOW TABLES")
+                rows = cursor.fetchall()
+                if not rows:
+                    return "数据库中没有表。"
+                table_names = [list(r.values())[0] for r in rows]
+                if keyword:
+                    keyword_lower = keyword.lower()
+                    table_names = [t for t in table_names if keyword_lower in t.lower()]
+                if not table_names:
+                    return f"没有找到包含 '{keyword}' 的表。"
+                return f"共 {len(table_names)} 张表:\n" + "\n".join(f"  - {t}" for t in table_names)
+        except pymysql.Error as e:
+            return f"查询失败: {e}"
+        finally:
+            conn.close()
 
     def _get_table_schema(self, table_name: str) -> str:
         if not table_name.strip():
             return "请提供表名。"
         # 防注入：只允许字母数字下划线
         clean = "".join(c for c in table_name if c.isalnum() or c == "_")
-        return _execute_query(f"DESCRIBE `{clean}`")
+
+        conn = _get_connection()
+        try:
+            with conn.cursor() as cursor:
+                # SHOW FULL COLUMNS 可以拿到 Comment
+                cursor.execute(f"SHOW FULL COLUMNS FROM `{clean}`")
+                rows = cursor.fetchall()
+                if not rows:
+                    return f"表 {clean} 不存在或没有字段。"
+
+                lines = [f"表 `{clean}` 的字段结构:"]
+                lines.append(f"{'字段名':<25} {'类型':<20} {'允许NULL':<8} {'键':<6} {'注释'}")
+                lines.append("-" * 90)
+                for r in rows:
+                    field = r.get("Field", "")
+                    ftype = r.get("Type", "")
+                    null = r.get("Null", "")
+                    key = r.get("Key", "")
+                    comment = r.get("Comment", "")
+                    lines.append(f"{field:<25} {ftype:<20} {null:<8} {key:<6} {comment}")
+
+                # 查看外键关系
+                db_name = os.getenv("DB_NAME", "useinfo")
+                cursor.execute(
+                    "SELECT COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME "
+                    "FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE "
+                    "WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s "
+                    "AND REFERENCED_TABLE_NAME IS NOT NULL",
+                    (db_name, clean),
+                )
+                fk_rows = cursor.fetchall()
+                if fk_rows:
+                    lines.append("\n外键关系:")
+                    for fk in fk_rows:
+                        lines.append(
+                            f"  {fk['COLUMN_NAME']} → "
+                            f"{fk['REFERENCED_TABLE_NAME']}.{fk['REFERENCED_COLUMN_NAME']}"
+                        )
+
+                return "\n".join(lines)
+        except pymysql.Error as e:
+            return f"查询表结构失败: {e}"
+        finally:
+            conn.close()
+
+    def _query_database(self, sql: str) -> str:
+        if not sql.strip():
+            return "请提供 SQL 查询语句。"
+        return _execute_query(sql)
 
 
 register(SqlSkill)

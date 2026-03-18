@@ -88,11 +88,14 @@ async def _fetch_group_name(group_id: int) -> str:
 
 async def _send_private_msg(user_id: int, text: str):
     """发送私聊消息"""
-    async with httpx.AsyncClient() as client:
-        await client.post(f"{NAPCAT_API_URL}/send_private_msg", json={
-            "user_id": user_id,
-            "message": [{"type": "text", "data": {"text": text}}],
-        })
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            await client.post(f"{NAPCAT_API_URL}/send_private_msg", json={
+                "user_id": user_id,
+                "message": [{"type": "text", "data": {"text": text}}],
+            })
+    except Exception as e:
+        print(f"[发送私聊消息失败] user={user_id}: {e}")
 
 
 async def _send_group_msg(group_id: int, text: str, at_user: int | None = None):
@@ -103,11 +106,14 @@ async def _send_group_msg(group_id: int, text: str, at_user: int | None = None):
         message.append({"type": "text", "data": {"text": " "}})
     message.append({"type": "text", "data": {"text": text}})
 
-    async with httpx.AsyncClient() as client:
-        await client.post(f"{NAPCAT_API_URL}/send_group_msg", json={
-            "group_id": group_id,
-            "message": message,
-        })
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            await client.post(f"{NAPCAT_API_URL}/send_group_msg", json={
+                "group_id": group_id,
+                "message": message,
+            })
+    except Exception as e:
+        print(f"[发送群消息失败] group={group_id}: {e}")
 
 
 def _extract_text(message) -> str:

@@ -79,6 +79,9 @@ def _sanitize_messages(messages: list[dict]) -> list[dict]:
                 for tool_msg in tool_responses[i]:
                     result.append(tool_msg)
             # 不完整的直接丢弃
+        elif role == "tool":
+            # 孤立的 tool 消息（对应的 assistant 不在当前消息列表中），丢弃
+            continue
         else:
             result.append(msg)
 

@@ -133,6 +133,54 @@ def _extract_text(message) -> str:
     return ""
 
 
+def _extract_images(message) -> list[dict]:
+    """从 OneBot 消息段中提取图片信息
+
+    返回格式: [{"url": str, "file": str}]
+    """
+    if not isinstance(message, list):
+        return []
+
+    images = []
+    for seg in message:
+        if seg.get("type") == "image":
+            data = seg.get("data", {})
+            # CQ码格式: [CQ:image,file=xxx,url=xxx]
+            # 消息段格式: {"type": "image", "data": {"file": "xxx", "url": "xxx"}}
+            file_id = data.get("file", "")
+            url = data.get("url", "")
+            images.append({
+                "file": file_id,
+                "url": url,
+                # NapCat 通常提供 URL，可以直接访问
+            })
+    return images
+
+
+def _extract_files(message) -> list[dict]:
+    """从 OneBot 消息段中提取文件信息
+
+    返回格式: [{"name": str, "url": str, "size": int}]
+    """
+    if not isinstance(message, list):
+        return []
+
+    files = []
+    for seg in message:
+        if seg.get("type") == "file":
+            data = seg.get("data", {})
+            # {"type": "file", "data": {"name": "xxx", "file": "xxx", "size": 123}}
+            name = data.get("name", "未知文件")
+            file_id = data.get("file", "")
+            size = data.get("size", 0)
+            files.append({
+                "name": name,
+                "file": file_id,
+                "size": size,
+            })
+    return files
+
+
 def _extract_location(message) -> dict:
     """
     从 OneBot 消息段中提取位置信息。
@@ -265,13 +313,33 @@ async def onebot_event(request: Request):
     if location and location.get("lat"):
         loc_parts = []
         if location.get("title"):
-            loc_parts.append(location["title"])
+            loc_parts.append(location.get("title"))
         if location.get("content"):
-            loc_parts.append(location["content"])
+            loc_parts.append(location.get("content"))
         loc_desc = "，".join(loc_parts) if loc_parts else f"经纬度({location['lat']}, {location['lon']})"
         text = f"[用户发送了位置] {loc_desc} (坐标: {location['lat']}, {location['lon']})"
 
-    if not text:
+    # 检查是否有图片
+    images = _extract_images(raw_message)
+    has_image = len(images) > 0
+
+    # 检查是否有文件
+    files = _extract_files(raw_message)
+    has_file = len(files) > 0
+
+    # 构建消息描述
+    message_parts = []
+    if text:
+        message_parts.append(text)
+    if has_image:
+        message_parts.append(f"[收到 {len(images)} 张图片]")
+    if has_file:
+        file_names = [f["name"] for f in files]
+        message_parts.append(f"[收到文件: {', '.join(file_names)}]")
+
+    full_message = "\n".join(message_parts)
+
+    if not full_message:
         return {"status": "empty"}
 
     # ---- 私聊 ----
@@ -285,9 +353,11 @@ async def onebot_event(request: Request):
 
         reply = await _handle_message(
             session_id=str(user_id),
-            text=text,
+            text=full_message,
             user_qq=str(user_id),
             group_id=None,
+            images=images,
+            files=files,
         )
         await _send_private_msg(user_id, reply)
         return {"status": "ok"}
@@ -360,6 +430,8 @@ async def onebot_event(request: Request):
             text=group_text,
             user_qq=str(user_id),
             group_id=str(group_id),
+            images=images,
+            files=files,
         )
 
         # 群聊回复不 @ 用户，像普通群友一样说话
@@ -369,8 +441,24 @@ async def onebot_event(request: Request):
     return {"status": "ignored"}
 
 
-async def _handle_message(session_id: str, text: str, user_qq: str = "", group_id: str = "") -> str:
-    """处理消息: 命令或对话"""
+async def _handle_message(session_id: str, text: str, user_qq: str = "", group_id: str = "",
+                         images: list[dict] = None, files: list[dict] = None) -> str:
+    """处理消息: 命令或对话
+
+    Args:
+        session_id: 会话ID
+        text: 文本消息
+        user_qq: 用户QQ号
+        group_id: 群号
+        images: 图片列表 [{"url": str, "file": str}]
+        files: 文件列表 [{"name": str, "file": str, "size": int}]
+    """
+    # 初始化
+    if images is None:
+        images = []
+    if files is None:
+        files = []
+
     # 命令
     if text == "清空记录" or text.endswith(": 清空记录"):
         agent = await get_agent(session_id)
@@ -402,7 +490,17 @@ async def _handle_message(session_id: str, text: str, user_qq: str = "", group_i
             "group_id": group_id,
             "user_display_name": display_name,
         }
-        reply = await agent.chat(text)
+
+        # 构建包含附件信息的消息
+        message_content = text
+        if images:
+            image_info = "\n".join([f"[图片: {img.get('url', img.get('file', ''))}]" for img in images])
+            message_content = f"{text}\n{image_info}"
+        if files:
+            file_info = "\n".join([f"[文件: {f.get('name', 'unknown')}]" for f in files])
+            message_content = f"{message_content}\n{file_info}"
+
+        reply = await agent.chat(message_content)
         return reply
     except Exception as e:
         return f"出错了: {e}"

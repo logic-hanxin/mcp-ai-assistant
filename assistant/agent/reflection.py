@@ -8,6 +8,7 @@ Reflection - 自我反思模块
 """
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass
@@ -17,6 +18,7 @@ class ReflectionResult:
     strategy: str        # "retry_same" / "try_alternative" / "give_up"
     reasoning: str       # 反思过程
     suggestion: str = "" # 给 LLM 的建议（如换参数）
+    conflict_report: str = ""  # 冲突检测报告（多源结果不一致时）
 
 
 REFLECTION_PROMPT = """你是一个自我反思模块。工具调用出现了问题，请分析原因并给出建议。
@@ -118,3 +120,197 @@ class Reflection:
     def reset(self):
         """重置所有重试计数"""
         self._retry_counts.clear()
+
+
+# ============ 冲突解决模块 ============
+
+
+@dataclass
+class SourceCredibility:
+    """数据源置信度配置"""
+    # 预设的工具置信度权重 (0.0 - 1.0)
+    DEFAULT_CREDIBILITY = {
+        # 官方/API 类 - 最高置信度
+        "get_weather": 0.95,
+        "query_express": 0.95,
+        "get_current_time": 0.95,
+        "get_leetcode_problem": 0.95,
+        "run_cpp_code": 0.90,
+        # 数据库类
+        "query_database": 0.90,
+        "list_tables": 0.85,
+        "get_table_schema": 0.85,
+        "list_contacts": 0.90,
+        "find_qq_by_name": 0.85,
+        # 知识库
+        "search_knowledge": 0.85,
+        # 搜索类 - 置信度较低
+        "web_search": 0.70,
+        "github_trending": 0.75,
+        "hacker_news_top": 0.70,
+        "github_get_latest_commits": 0.80,
+        # 用户输入类
+        "take_note": 0.80,
+        "add_rule": 0.80,
+    }
+
+    @classmethod
+    def get_credibility(cls, tool_name: str) -> float:
+        """获取工具的置信度权重"""
+        return cls.DEFAULT_CREDIBILITY.get(tool_name, 0.50)
+
+    @classmethod
+    def register_source(cls, tool_name: str, credibility: float):
+        """注册新的数据源及其置信度"""
+        if 0.0 <= credibility <= 1.0:
+            cls.DEFAULT_CREDIBILITY[tool_name] = credibility
+
+
+@dataclass
+class MultiSourceResult:
+    """多源查询结果"""
+    tool_name: str
+    result: str
+    credibility: float
+    timestamp: float = 0.0
+
+
+@dataclass
+class ConflictReport:
+    """冲突检测报告"""
+    is_conflict: bool
+    sources: list[str]           # 冲突的来源列表
+    conflicting_points: list[str]  # 冲突点描述
+    resolved_result: str = ""   # 仲裁结果
+    resolution_method: str = ""  # 仲裁方式: "credibility_priority" / "majority_vote" / "llm_arbitration"
+    confidence: float = 0.0      # 仲裁结果置信度
+
+
+CONFLICT_DETECTION_PROMPT = """你是一个事实核查模块。多个数据源返回了不一致的结果，请分析冲突点并给出仲裁建议。
+
+用户查询: {user_query}
+
+数据源返回:
+{sources_info}
+
+请分析这些结果的差异点，判断哪个更可信。
+
+返回 JSON:
+{{
+    "is_conflict": true/false,
+    "conflicting_points": ["冲突点1", "冲突点2"],
+    "resolved_result": "仲裁后的结果",
+    "resolution_method": "credibility_priority / majority_vote / llm_arbitration",
+    "confidence": 0.0-1.0,
+    "reasoning": "仲裁理由"
+}}
+
+只返回 JSON。"""
+
+
+class ConflictDetector:
+    """冲突检测器 - 检测多源结果不一致并仲裁"""
+
+    def __init__(self, llm_client, model: str):
+        self.llm = llm_client
+        self.model = model
+        self._result_cache: list[MultiSourceResult] = []
+
+    def add_result(self, tool_name: str, result: str, timestamp: float = 0.0):
+        """添加一个查询结果到缓存"""
+        credibility = SourceCredibility.get_credibility(tool_name)
+        self._result_cache.append(MultiSourceResult(
+            tool_name=tool_name,
+            result=result,
+            credibility=credibility,
+            timestamp=timestamp,
+        ))
+
+    def clear(self):
+        """清空缓存"""
+        self._result_cache.clear()
+
+    def detect_conflict(self, user_query: str = "") -> ConflictReport:
+        """
+        检测缓存中的结果是否有冲突
+        如果有多个来源返回了结果，进行冲突检测和仲裁
+        """
+        if len(self._result_cache) < 2:
+            return ConflictReport(
+                is_conflict=False,
+                sources=[],
+                conflicting_points=[],
+                resolution_method="insufficient_data",
+                confidence=1.0,
+            )
+
+        # 简单冲突检测：检查是否有明显的矛盾关键词
+        results_text = "\n".join(
+            f"来源: {r.tool_name} (置信度: {r.credibility})\n结果: {r.result[:200]}"
+            for r in self._result_cache
+        )
+
+        try:
+            response = self.llm.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "你是一个事实核查专家。"},
+                    {"role": "user", "content": CONFLICT_DETECTION_PROMPT.format(
+                        user_query=user_query,
+                        sources_info=results_text,
+                    )}
+                ],
+                response_format={"type": "json_object"},
+            )
+
+            import json
+            result = json.loads(response.choices[0].message.content)
+
+            if not result.get("is_conflict", False):
+                return ConflictReport(
+                    is_conflict=False,
+                    sources=[r.tool_name for r in self._result_cache],
+                    conflicting_points=[],
+                    resolved_result=self._get_highest_credibility_result(),
+                    resolution_method="credibility_priority",
+                    confidence=result.get("confidence", 0.8),
+                )
+
+            # 存在冲突，返回仲裁报告
+            return ConflictReport(
+                is_conflict=True,
+                sources=[r.tool_name for r in self._result_cache],
+                conflicting_points=result.get("conflicting_points", []),
+                resolved_result=result.get("resolved_result", ""),
+                resolution_method=result.get("resolution_method", "llm_arbitration"),
+                confidence=result.get("confidence", 0.5),
+            )
+
+        except Exception:
+            # LLM 仲裁失败，使用置信度优先级
+            return ConflictReport(
+                is_conflict=True,
+                sources=[r.tool_name for r in self._result_cache],
+                conflicting_points=["检测失败，使用置信度优先级"],
+                resolved_result=self._get_highest_credibility_result(),
+                resolution_method="credibility_priority",
+                confidence=0.5,
+            )
+
+    def _get_highest_credibility_result(self) -> str:
+        """返回置信度最高的来源结果"""
+        if not self._result_cache:
+            return ""
+        sorted_results = sorted(self._result_cache, key=lambda x: x.credibility, reverse=True)
+        return f"[来源: {sorted_results[0].tool_name}] {sorted_results[0].result[:500]}"
+
+    def get_all_results(self) -> list[dict]:
+        """获取所有缓存的结果（供调试或展示用）"""
+        return [
+            {
+                "tool": r.tool_name,
+                "credibility": r.credibility,
+                "result": r.result[:200] if len(r.result) > 200 else r.result,
+            }
+            for r in sorted(self._result_cache, key=lambda x: x.credibility, reverse=True)
+        ]

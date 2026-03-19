@@ -58,6 +58,23 @@ def _is_admin(user_id: int) -> bool:
     return str(user_id) in admins
 
 
+async def _get_file_url(file_id: str) -> str | None:
+    """通过 NapCat API 获取文件下载 URL"""
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(
+                f"{NAPCAT_API_URL}/get_file",
+                json={"file_id": file_id},
+            )
+            data = resp.json()
+            if data.get("status") == "ok":
+                return data.get("data", {}).get("url")
+    except Exception as e:
+        print(f"[获取文件URL失败] {file_id}: {e}")
+    return None
+
+
 async def _fetch_qq_nickname(user_id: int) -> str:
     """通过 NapCat API 获取 QQ 用户昵称"""
     try:
@@ -327,6 +344,14 @@ async def onebot_event(request: Request):
     files = _extract_files(raw_message)
     has_file = len(files) > 0
 
+    # 尝试获取文件的下载 URL
+    if has_file:
+        for f in files:
+            if f.get("file") and not f.get("url"):
+                url = await _get_file_url(f["file"])
+                if url:
+                    f["url"] = url
+
     # 构建消息描述
     message_parts = []
     if text:
@@ -334,8 +359,16 @@ async def onebot_event(request: Request):
     if has_image:
         message_parts.append(f"[收到 {len(images)} 张图片]")
     if has_file:
-        file_names = [f["name"] for f in files]
-        message_parts.append(f"[收到文件: {', '.join(file_names)}]")
+        # 显示文件名和 URL（如果有）
+        file_info = []
+        for f in files:
+            name = f.get("name", "未知文件")
+            url = f.get("url", "")
+            if url:
+                file_info.append(f"{name}: {url}")
+            else:
+                file_info.append(name)
+        message_parts.append(f"[收到文件: {', '.join(file_info)}]")
 
     full_message = "\n".join(message_parts)
 

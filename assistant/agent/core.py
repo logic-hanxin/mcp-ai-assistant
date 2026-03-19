@@ -27,6 +27,7 @@ from assistant.agent.memory import Memory
 from assistant.agent.planner import Planner
 from assistant.agent.reflection import Reflection
 from assistant.agent.router import Router, EXPERT_PROFILES
+from assistant.agent.blackboard import Blackboard
 
 
 SYSTEM_PROMPT = """你是「小彩云」，彩云协会的智能助手，也是群里的一员。
@@ -91,6 +92,8 @@ class AgentCore:
         self.planner = Planner(self.llm_client, self.model)
         self.reflection = Reflection(self.llm_client, self.model)
         self.router = Router(self.llm_client, self.model)
+        # 黑板模式 - 多Agent共享状态
+        self.blackboard = Blackboard.get_instance()
         # 会话上下文 (QQ号、群号等，由外部注入)
         self.session_context: dict = {}
 
@@ -193,6 +196,9 @@ class AgentCore:
                 # 执行工具
                 tool_result = await self.mcp.call_tool(func_name, func_args)
 
+                # 写入黑板（多Agent共享状态）
+                self._update_blackboard(func_name, func_args, tool_result)
+
                 # Reflection: 评估结果
                 ref = self.reflection.evaluate(func_name, func_args, tool_result, user_input)
                 if ref.should_retry and ref.strategy == "retry_same":
@@ -267,6 +273,14 @@ class AgentCore:
 
                     result = await self.mcp.call_tool(fn, args)
 
+                    # 写入黑板
+                    self.blackboard.write_result(
+                        step_id=f"step_{step.step_id}",
+                        milestone="plan",
+                        tool_name=fn,
+                        result=result[:500],
+                    )
+
                     # Reflection
                     ref = self.reflection.evaluate(fn, args, result, step.description)
                     if ref.should_retry:
@@ -321,6 +335,37 @@ class AgentCore:
         summary = response.choices[0].message.content or ""
         self.memory.compress(summary)
         print("  [记忆] 对话已压缩")
+
+    # ----------------------------------------------------------
+    # 黑板模式 - 多Agent共享状态
+    # ----------------------------------------------------------
+    def _update_blackboard(self, tool_name: str, tool_args: dict, tool_result: str):
+        """将工具执行结果写入黑板"""
+        try:
+            # 根据工具类型识别实体
+            if tool_name in ("list_contacts", "find_qq_by_name"):
+                # 联系人信息
+                if "联系人" in tool_result or "QQ号" in tool_result:
+                    # 解析联系人结果并写入
+                    pass  # 简化处理
+
+            elif tool_name in ("get_weather",):
+                # 天气信息 - 写入共享变量
+                self.blackboard.set("last_weather", tool_result[:200])
+
+            elif tool_name in ("search_knowledge",):
+                # 知识库检索结果
+                self.blackboard.set("last_knowledge_result", tool_result[:500])
+
+            # 写入中间结果
+            self.blackboard.write_result(
+                step_id=f"react_{tool_name}",
+                milestone="general",
+                tool_name=tool_name,
+                result=tool_result[:500],
+            )
+        except Exception as e:
+            print(f"  [黑板] 更新失败: {e}")
 
     # ----------------------------------------------------------
     # 系统提示构建

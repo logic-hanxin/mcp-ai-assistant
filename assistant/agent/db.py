@@ -165,6 +165,25 @@ CREATE TABLE IF NOT EXISTS `app_news_state` (
     `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (`key_name`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='新闻推送状态';
+
+CREATE TABLE IF NOT EXISTS `app_workflows` (
+    `id` BIGINT NOT NULL AUTO_INCREMENT,
+    `name` VARCHAR(200) NOT NULL COMMENT '工作流名称',
+    `description` TEXT DEFAULT '' COMMENT '自然语言描述',
+    `steps` JSON NOT NULL COMMENT '步骤定义 [{tool, args}, ...]',
+    `schedule` VARCHAR(200) NOT NULL COMMENT '调度规则: daily:08:00 / interval:30m / weekly:1,3,5:09:00 / once:2026-03-20 15:00',
+    `enabled` TINYINT DEFAULT 1,
+    `created_by` VARCHAR(50) DEFAULT '' COMMENT '创建者QQ号',
+    `notify_qq` VARCHAR(50) DEFAULT '' COMMENT '结果通知QQ号',
+    `notify_group_id` VARCHAR(50) DEFAULT '' COMMENT '结果通知群号',
+    `last_run` DATETIME DEFAULT NULL,
+    `next_run` DATETIME DEFAULT NULL,
+    `run_count` INT DEFAULT 0,
+    `last_result` TEXT DEFAULT '' COMMENT '上次执行结果摘要',
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    INDEX `idx_enabled_next` (`enabled`, `next_run`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='自动化工作流';
 """
 
 
@@ -858,5 +877,108 @@ def news_state_set(key: str, value: str):
                 (key, value, value),
             )
         conn.commit()
+    finally:
+        conn.close()
+
+
+# ============================================================
+# 工作流
+# ============================================================
+def workflow_create(name: str, steps: str, schedule: str,
+                    description: str = "", created_by: str = "",
+                    notify_qq: str = "", notify_group_id: str = "",
+                    next_run: str = "") -> int:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO app_workflows "
+                "(name, description, steps, schedule, created_by, notify_qq, notify_group_id, next_run) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                (name, description, steps, schedule, created_by,
+                 notify_qq, notify_group_id, next_run or None),
+            )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def workflow_list(enabled_only: bool = False) -> list[dict]:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            if enabled_only:
+                cur.execute(
+                    "SELECT * FROM app_workflows WHERE enabled = 1 ORDER BY id ASC"
+                )
+            else:
+                cur.execute("SELECT * FROM app_workflows ORDER BY id ASC")
+            return list(cur.fetchall())
+    finally:
+        conn.close()
+
+
+def workflow_get(workflow_id: int) -> dict | None:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM app_workflows WHERE id = %s", (workflow_id,))
+            return cur.fetchone()
+    finally:
+        conn.close()
+
+
+def workflow_get_due() -> list[dict]:
+    """获取到期需要执行的工作流"""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM app_workflows "
+                "WHERE enabled = 1 AND next_run IS NOT NULL AND next_run <= NOW()"
+            )
+            return list(cur.fetchall())
+    finally:
+        conn.close()
+
+
+def workflow_update_after_run(workflow_id: int, next_run: str | None,
+                              last_result: str = ""):
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE app_workflows SET "
+                "last_run = NOW(), next_run = %s, run_count = run_count + 1, "
+                "last_result = %s WHERE id = %s",
+                (next_run, last_result[:2000], workflow_id),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def workflow_toggle(workflow_id: int, enabled: bool) -> bool:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE app_workflows SET enabled = %s WHERE id = %s",
+                (1 if enabled else 0, workflow_id),
+            )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def workflow_delete(workflow_id: int) -> bool:
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM app_workflows WHERE id = %s", (workflow_id,))
+        conn.commit()
+        return cur.rowcount > 0
     finally:
         conn.close()

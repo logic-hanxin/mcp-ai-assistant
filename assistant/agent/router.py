@@ -53,7 +53,7 @@ EXPERT_PROFILES: dict[str, dict] = {
     },
     "task": {
         "name": "任务管理专家",
-        "description": "笔记管理、定时提醒、通讯录管理、QQ消息发送、GitHub仓库监控、网站监控、守则管理",
+        "description": "笔记管理、定时提醒、通讯录管理、QQ消息发送、GitHub仓库监控、网站监控、守则管理、自动化工作流",
         "tool_names": {
             # 笔记
             "take_note", "list_notes", "search_notes", "delete_note",
@@ -71,6 +71,9 @@ EXPERT_PROFILES: dict[str, dict] = {
             "add_site_monitor", "remove_site_monitor", "list_site_monitors",
             # 守则
             "add_rule", "list_rules", "delete_rule",
+            # 工作流
+            "create_workflow", "list_workflows", "toggle_workflow",
+            "delete_workflow", "run_workflow_now",
         },
         "system_hint": (
             "当前为任务管理模式。准确执行用户的管理操作，"

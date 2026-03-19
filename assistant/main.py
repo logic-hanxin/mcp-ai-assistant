@@ -13,6 +13,7 @@ from assistant.agent.core import AgentCore
 from assistant.agent.reminder_checker import reminder_loop
 from assistant.agent.github_checker import github_check_loop
 from assistant.agent.news_checker import news_check_loop
+from assistant.agent.workflow_runner import workflow_loop
 
 BANNER = r"""
 ╔════════════════════════════════════════════════════╗
@@ -48,6 +49,7 @@ async def run():
         reminder_task = asyncio.create_task(reminder_loop())
         github_task = asyncio.create_task(github_check_loop())
         news_task = asyncio.create_task(news_check_loop())
+        workflow_task = asyncio.create_task(workflow_loop())
 
         print(BANNER)
 
@@ -132,6 +134,7 @@ async def run():
         reminder_task.cancel()
         github_task.cancel()
         news_task.cancel()
+        workflow_task.cancel()
         await agent.close()
 
 

@@ -17,6 +17,7 @@ from assistant.agent.reminder_checker import reminder_loop
 from assistant.agent.github_checker import github_check_loop
 from assistant.agent.news_checker import news_check_loop
 from assistant.agent.site_checker import site_check_loop
+from assistant.agent.workflow_runner import workflow_loop
 
 
 # 每个用户独立的 Agent 实例
@@ -58,6 +59,7 @@ async def lifespan(app: FastAPI):
     github_task = asyncio.create_task(github_check_loop())
     news_task = asyncio.create_task(news_check_loop())
     site_task = asyncio.create_task(site_check_loop())
+    workflow_task = asyncio.create_task(workflow_loop())
     print("[API] AI助手服务已启动")
     yield
 
@@ -65,6 +67,7 @@ async def lifespan(app: FastAPI):
     github_task.cancel()
     news_task.cancel()
     site_task.cancel()
+    workflow_task.cancel()
     for agent in _agents.values():
         await agent.close()
     _agents.clear()

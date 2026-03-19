@@ -169,7 +169,7 @@ CREATE TABLE IF NOT EXISTS `app_news_state` (
 CREATE TABLE IF NOT EXISTS `app_workflows` (
     `id` BIGINT NOT NULL AUTO_INCREMENT,
     `name` VARCHAR(200) NOT NULL COMMENT '工作流名称',
-    `description` TEXT DEFAULT '' COMMENT '自然语言描述',
+    `description` TEXT COMMENT '自然语言描述',
     `steps` JSON NOT NULL COMMENT '步骤定义 [{tool, args}, ...]',
     `schedule` VARCHAR(200) NOT NULL COMMENT '调度规则: daily:08:00 / interval:30m / weekly:1,3,5:09:00 / once:2026-03-20 15:00',
     `enabled` TINYINT DEFAULT 1,
@@ -179,7 +179,7 @@ CREATE TABLE IF NOT EXISTS `app_workflows` (
     `last_run` DATETIME DEFAULT NULL,
     `next_run` DATETIME DEFAULT NULL,
     `run_count` INT DEFAULT 0,
-    `last_result` TEXT DEFAULT '' COMMENT '上次执行结果摘要',
+    `last_result` TEXT COMMENT '上次执行结果摘要',
     `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (`id`),
     INDEX `idx_enabled_next` (`enabled`, `next_run`)

@@ -533,6 +533,10 @@ async def _handle_message(session_id: str, text: str, user_qq: str = "", group_i
             file_info = "\n".join([f"[文件: {f.get('name', 'unknown')}]" for f in files])
             message_content = f"{message_content}\n{file_info}"
 
+        # 设置当前用户 QQ（供 Skill 权限检查使用）
+        import os
+        os.environ["CURRENT_USER_QQ"] = user_qq
+
         reply = await agent.chat(message_content)
         return reply
     except Exception as e:

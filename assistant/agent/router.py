@@ -22,7 +22,7 @@ EXPERT_PROFILES: dict[str, dict] = {
         "description": "日常闲聊、问候寒暄、天气查询、翻译、计算、时间查询、图片识别、王者荣耀",
         "tool_names": {
             "get_weather", "calculate", "translate_text",
-            "get_current_time", "recognize_image",
+            "get_current_time", "ocr_image", "understand_image", "scan_qrcode",
             "query_hero_power", "search_hero",
         },
         "system_hint": (
@@ -32,12 +32,14 @@ EXPERT_PROFILES: dict[str, dict] = {
     },
     "query": {
         "name": "信息查询专家",
-        "description": "数据库SQL查询、知识库RAG检索、网页搜索、新闻热搜、快递物流、音乐搜索、IP/手机定位、技术趋势、文件读取",
+        "description": "数据库SQL查询、知识库RAG检索、网页搜索、新闻热搜、快递物流、音乐搜索、IP/手机定位、技术趋势、文件读取、文档导入",
         "tool_names": {
             # SQL
             "list_tables", "get_table_schema", "query_database",
             # 知识库 RAG
             "add_knowledge", "search_knowledge", "list_knowledge_docs", "delete_knowledge_doc",
+            # 文档导入
+            "import_document", "parse_document",
             # 搜索 & 新闻
             "web_search", "get_hot_news", "send_news_to_qq",
             # 生活查询
@@ -51,6 +53,7 @@ EXPERT_PROFILES: dict[str, dict] = {
         "system_hint": (
             "当前为信息查询模式。优先使用工具获取准确数据，"
             "查数据库时按照 list_tables → get_table_schema → query_database 三步走。"
+            "用户发送文档时，使用 import_document 导入知识库。"
         ),
     },
     "task": {

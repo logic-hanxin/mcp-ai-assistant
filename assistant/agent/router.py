@@ -32,7 +32,7 @@ EXPERT_PROFILES: dict[str, dict] = {
     },
     "query": {
         "name": "信息查询专家",
-        "description": "数据库SQL查询、知识库RAG检索、网页搜索、新闻热搜、快递物流、音乐搜索、IP/手机定位、技术趋势、文件读取、文档导入",
+        "description": "数据库SQL查询、知识库RAG检索、网页搜索、新闻热搜、快递物流、音乐搜索、IP/手机定位、技术趋势、文件读取、浏览器自动化",
         "tool_names": {
             # SQL
             "list_tables", "get_table_schema", "query_database",
@@ -49,11 +49,14 @@ EXPERT_PROFILES: dict[str, dict] = {
             "github_trending", "hacker_news_top", "qa_tech_recommend",
             # 文件
             "read_file", "list_directory",
+            # 浏览器
+            "browse_page", "login_and_get", "fill_form", "click_element", "screenshot",
         },
         "system_hint": (
             "当前为信息查询模式。优先使用工具获取准确数据，"
             "查数据库时按照 list_tables → get_table_schema → query_database 三步走。"
             "用户发送文档时，使用 import_document 导入知识库。"
+            "当需要获取没有API的网页内容时，使用 browse_page 浏览器自动化。"
         ),
     },
     "task": {

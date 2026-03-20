@@ -1,6 +1,7 @@
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
+from assistant.agent.planner import Plan, PlanStep
 
 from assistant.agent.blackboard import Blackboard
 
@@ -126,6 +127,35 @@ class BlackboardIntegrationTests(unittest.TestCase):
         )
 
         self.assertIn("先停止后续步骤", message)
+
+    def test_build_plan_summary_prompt_includes_tool_outputs(self):
+        plan = Plan(
+            goal="查询电影信息",
+            steps=[PlanStep(step_id=1, description="搜索并阅读", status="done", result="已完成")],
+        )
+
+        prompt = self.core._build_plan_summary_prompt(
+            plan,
+            [
+                {
+                    "step_id": 1,
+                    "description": "搜索并阅读",
+                    "status": "done",
+                    "result": "已完成",
+                    "tool_outputs": [
+                        {
+                            "tool_name": "search_and_read",
+                            "args": {"query": "汤唯 色戒"},
+                            "result": "【页面标题】色戒\n【页面内容】\n详细介绍",
+                        }
+                    ],
+                }
+            ],
+        )
+
+        self.assertIn("步骤执行明细", prompt)
+        self.assertIn("search_and_read", prompt)
+        self.assertIn("详细介绍", prompt)
 
     def test_tool_policy_blocks_notify_without_target(self):
         error = self.core._apply_tool_policy("send_qq_message", {"content": "你好"})

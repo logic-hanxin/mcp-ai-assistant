@@ -291,10 +291,12 @@ class AgentCore:
     async def _execute_with_plan(self, user_input: str, plan) -> str:
         """按计划逐步执行，使用全量工具"""
         all_tools = self.mcp.tools or None
+        step_outputs: list[dict] = []
 
         for step in plan.steps:
             step.status = "running"
             print(f"  [执行] Step {step.step_id}: {step.description}")
+            step_tool_outputs: list[dict] = []
 
             # 构造带计划上下文的 prompt，让 LLM 执行当前步骤
             step_prompt = (
@@ -338,6 +340,13 @@ class AgentCore:
                     else:
                         call_result = await self.mcp.call_tool_ex(fn, args)
                         result = call_result.text
+                    step_tool_outputs.append(
+                        {
+                            "tool_name": fn,
+                            "args": dict(args),
+                            "result": result,
+                        }
+                    )
 
                     # 写入黑板
                     self.blackboard.write_result(
@@ -364,6 +373,15 @@ class AgentCore:
                     if abort_message:
                         step.status = "failed"
                         step.result = result
+                        step_outputs.append(
+                            {
+                                "step_id": step.step_id,
+                                "description": step.description,
+                                "status": "failed",
+                                "result": result,
+                                "tool_outputs": step_tool_outputs,
+                            }
+                        )
                         print(f"  [终止] Step {step.step_id}: {abort_message}")
                         return abort_message
 
@@ -377,14 +395,22 @@ class AgentCore:
                 message = response.choices[0].message
 
             step.mark_done(message.content or "")
+            if step_tool_outputs and not step.result:
+                step.result = step_tool_outputs[-1]["result"][:500]
+            step_outputs.append(
+                {
+                    "step_id": step.step_id,
+                    "description": step.description,
+                    "status": step.status,
+                    "result": step.result,
+                    "tool_outputs": step_tool_outputs,
+                }
+            )
             print(f"  [完成] Step {step.step_id}")
 
         # 最终汇总
         plan.is_complete = True
-        summary_prompt = (
-            f"你已完成以下计划的所有步骤:\n{plan.summary()}\n\n"
-            f"请基于各步骤结果，给用户一个完整的汇总回复。"
-        )
+        summary_prompt = self._build_plan_summary_prompt(plan, step_outputs)
 
         response = self.llm_client.chat.completions.create(
             model=self.model,
@@ -394,6 +420,28 @@ class AgentCore:
             ],
         )
         return response.choices[0].message.content or "任务已完成。"
+
+    def _build_plan_summary_prompt(self, plan, step_outputs: list[dict]) -> str:
+        lines = [
+            "你已完成以下计划，请务必基于真实步骤结果汇总，不要忽略工具输出，也不要凭空补内容。",
+            plan.summary(),
+            "",
+            "步骤执行明细:",
+        ]
+        for item in step_outputs:
+            lines.append(f"Step {item['step_id']}: {item['description']}")
+            lines.append(f"状态: {item['status']}")
+            if item.get("tool_outputs"):
+                for idx, tool_item in enumerate(item["tool_outputs"], 1):
+                    lines.append(f"  工具{idx}: {tool_item['tool_name']}")
+                    lines.append(f"  参数: {json.dumps(tool_item['args'], ensure_ascii=False)}")
+                    lines.append(f"  结果: {str(tool_item['result'])[:1200]}")
+            elif item.get("result"):
+                lines.append(f"结果: {str(item['result'])[:1200]}")
+            lines.append("")
+
+        lines.append("请基于上面的步骤执行明细，给用户一个完整、准确的最终回复。")
+        return "\n".join(lines)
 
     def _plan_abort_message_for_tool_failure(self, tool_name: str, tool_args: dict, tool_result: str) -> str | None:
         """关键工具失败时，阻止计划继续脑补后续步骤。"""

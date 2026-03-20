@@ -108,7 +108,12 @@ class DocumentHydrator(ToolHydrator):
 
     def apply(self, ctx: ToolHydrationContext) -> dict:
         args = dict(ctx.tool_args)
-        _fill_if_empty(args, "file_path", ctx.session_file or ctx.bb_file)
+        fallback_file = ctx.session_file or ctx.bb_file
+        current_file = str(args.get("file_path", "")).strip()
+        if _should_replace_document_path(current_file, fallback_file):
+            args["file_path"] = fallback_file
+        else:
+            _fill_if_empty(args, "file_path", fallback_file)
         return args
 
 
@@ -177,3 +182,21 @@ def hydrate_tool_args(ctx: ToolHydrationContext, hydrators: list[ToolHydrator]) 
 def _fill_if_empty(args: dict, key: str, value: str):
     if value and not str(args.get(key, "")).strip():
         args[key] = value
+
+
+def _should_replace_document_path(current_path: str, fallback_path: str) -> bool:
+    if not fallback_path:
+        return False
+    current_path = (current_path or "").strip()
+    if not current_path:
+        return False
+    if current_path.startswith("http://") or current_path.startswith("https://"):
+        return False
+
+    suspicious_markers = (
+        "/.config/QQ/NapCat/",
+        "/app/.config/QQ/NapCat/",
+        "NapCat/temp/",
+        "\\NapCat\\temp\\",
+    )
+    return any(marker in current_path for marker in suspicious_markers)

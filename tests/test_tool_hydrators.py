@@ -168,6 +168,28 @@ class ToolHydratorTests(unittest.TestCase):
         )
         self.assertEqual(args["file_path"], "https://files.example.com/last.docx")
 
+    def test_document_hydrator_replaces_suspicious_napcat_temp_path(self):
+        args = hydrate_tool_args(
+            ToolHydrationContext(
+                tool_name="parse_document",
+                tool_args={"file_path": "/app/.config/QQ/NapCat/temp/test.pdf"},
+                session_user="",
+                session_group="",
+                session_image="",
+                session_file="https://files.example.com/current.pdf",
+                bb_user="",
+                bb_group="",
+                bb_repo="",
+                bb_branch="",
+                bb_city="",
+                bb_image="",
+                bb_file="",
+                shareable_text="",
+            ),
+            self.hydrators,
+        )
+        self.assertEqual(args["file_path"], "https://files.example.com/current.pdf")
+
 
 if __name__ == "__main__":
     unittest.main()

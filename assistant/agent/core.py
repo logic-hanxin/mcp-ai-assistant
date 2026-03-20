@@ -360,6 +360,13 @@ class AgentCore:
                         retry_result = await self.mcp.call_tool_ex(fn, args)
                         result = retry_result.text
 
+                    abort_message = self._plan_abort_message_for_tool_failure(fn, args, result)
+                    if abort_message:
+                        step.status = "failed"
+                        step.result = result
+                        print(f"  [终止] Step {step.step_id}: {abort_message}")
+                        return abort_message
+
                     messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
 
                 response = self.llm_client.chat.completions.create(
@@ -387,6 +394,37 @@ class AgentCore:
             ],
         )
         return response.choices[0].message.content or "任务已完成。"
+
+    def _plan_abort_message_for_tool_failure(self, tool_name: str, tool_args: dict, tool_result: str) -> str | None:
+        """关键工具失败时，阻止计划继续脑补后续步骤。"""
+        result = (tool_result or "").strip()
+        if not result:
+            return None
+
+        failure_markers = (
+            "文档解析失败",
+            "文档导入失败",
+            "文件不存在",
+            "目录不存在",
+            "No such file or directory",
+            "无法解析文档内容",
+        )
+
+        if tool_name not in ("parse_document", "import_document", "read_file"):
+            return None
+        if not any(marker in result for marker in failure_markers):
+            return None
+
+        file_path = str(tool_args.get("file_path", "")).strip()
+        if file_path.startswith("http://") or file_path.startswith("https://"):
+            return (
+                "文件我已经收到了，但这次解析没有成功，所以我先停在这里，避免继续错误地导入知识库或发送通知。"
+                " 你可以把文件再发一次，或者让我直接重试解析这个链接。"
+            )
+        return (
+            "这次文件解析失败了，而且当前拿到的是一个容器里不存在的本地路径，所以我先停止后续步骤，"
+            "不再继续脑补知识库导入或通知流程。你把文件重新发我一下，我会优先使用可访问的文件链接来处理。"
+        )
 
     # ----------------------------------------------------------
     # 记忆压缩

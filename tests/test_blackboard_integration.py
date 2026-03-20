@@ -108,6 +108,25 @@ class BlackboardIntegrationTests(unittest.TestCase):
         self.assertEqual(broadcast_args["content"], "这是最近一次搜索结果")
         self.assertEqual(rule_args["user_qq"], "90001")
 
+    def test_hydrate_tool_args_replaces_suspicious_file_path_with_recent_file_url(self):
+        self.core.session_context = {"latest_file_url": "https://files.example.com/job.pdf"}
+
+        doc_args = self.core._hydrate_tool_args(
+            "parse_document",
+            {"file_path": "/app/.config/QQ/NapCat/temp/job.pdf"},
+        )
+
+        self.assertEqual(doc_args["file_path"], "https://files.example.com/job.pdf")
+
+    def test_plan_abort_message_blocks_followup_after_document_failure(self):
+        message = self.core._plan_abort_message_for_tool_failure(
+            "parse_document",
+            {"file_path": "/app/.config/QQ/NapCat/temp/job.pdf"},
+            "文档解析失败: [Errno 2] No such file or directory",
+        )
+
+        self.assertIn("先停止后续步骤", message)
+
     def test_tool_policy_blocks_notify_without_target(self):
         error = self.core._apply_tool_policy("send_qq_message", {"content": "你好"})
         self.assertIn("qq_number", error)

@@ -13,11 +13,16 @@ Skill 基类与自动发现机制
 """
 
 from abc import ABC, abstractmethod
+import base64
 from dataclasses import dataclass, field
+import json
 from typing import Callable, Any
 import importlib
 import pkgutil
 import pathlib
+
+
+STRUCTURED_RESULT_MARKER = "__ASSISTANT_STRUCTURED_RESULT__:"
 
 
 @dataclass
@@ -27,6 +32,49 @@ class ToolDefinition:
     description: str
     parameters: dict  # JSON Schema 格式
     handler: Callable[..., str]  # 实际执行函数
+    metadata: dict[str, Any] = field(default_factory=dict)
+    result_parser: Callable[[dict, str], dict[str, Any] | None] | None = None
+    keywords: list[str] = field(default_factory=list)
+    intents: list[str] = field(default_factory=list)
+
+
+@dataclass
+class DecodedToolResult:
+    text: str
+    structured: dict[str, Any] | None = None
+
+
+def encode_tool_result(text: str, structured: dict[str, Any] | None = None) -> str:
+    """把人类可读文本和结构化结果编码成单个字符串返回。"""
+    text = text or ""
+    if not structured:
+        return text
+    payload = json.dumps(structured, ensure_ascii=False, separators=(",", ":"))
+    encoded = base64.b64encode(payload.encode("utf-8")).decode("ascii")
+    return f"{text}\n{STRUCTURED_RESULT_MARKER}{encoded}"
+
+
+def decode_tool_result(payload: str) -> DecodedToolResult:
+    """从 MCP 文本结果中提取结构化 side channel。"""
+    payload = payload or ""
+    marker_index = payload.rfind(STRUCTURED_RESULT_MARKER)
+    if marker_index < 0:
+        return DecodedToolResult(text=payload)
+
+    text = payload[:marker_index].rstrip()
+    encoded = payload[marker_index + len(STRUCTURED_RESULT_MARKER):].strip()
+    if not encoded:
+        return DecodedToolResult(text=text)
+
+    try:
+        decoded = base64.b64decode(encoded.encode("ascii")).decode("utf-8")
+        structured = json.loads(decoded)
+    except Exception:
+        return DecodedToolResult(text=payload)
+
+    if not isinstance(structured, dict):
+        return DecodedToolResult(text=text)
+    return DecodedToolResult(text=text, structured=structured)
 
 
 class BaseSkill(ABC):
@@ -86,3 +134,31 @@ def discover_and_load_skills() -> list[BaseSkill]:
         skill.on_load()
         instances.append(skill)
     return instances
+
+
+def discover_tool_metadata() -> dict[str, dict]:
+    """
+    返回 {tool_name: metadata}，供路由/规划/黑板等模块使用。
+    """
+    metadata_index: dict[str, dict] = {}
+    for skill in discover_and_load_skills():
+        for tool in skill.get_tools():
+            metadata_index[tool.name] = {
+                "skill": skill.name,
+                "description": tool.description,
+                "keywords": list(tool.keywords),
+                "intents": list(tool.intents),
+                **tool.metadata,
+            }
+    return metadata_index
+
+
+def discover_tool_definitions() -> dict[str, ToolDefinition]:
+    """
+    返回 {tool_name: ToolDefinition}，保留原始定义供执行治理层使用。
+    """
+    definitions: dict[str, ToolDefinition] = {}
+    for skill in discover_and_load_skills():
+        for tool in skill.get_tools():
+            definitions[tool.name] = tool
+    return definitions

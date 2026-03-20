@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 
 import pymysql
 from assistant.skills.base import BaseSkill, ToolDefinition, register
@@ -83,6 +84,14 @@ class SqlSkill(BaseSkill):
                     },
                 },
                 handler=self._list_tables,
+                metadata={
+                    "category": "read",
+                    "blackboard_writes": ["last_db_result"],
+                    "store_result": ["last_db_result"],
+                },
+                result_parser=self._parse_list_tables_result,
+                keywords=["数据库表", "查看表", "有哪些表"],
+                intents=["list_database_tables"],
             ),
             ToolDefinition(
                 name="get_table_schema",
@@ -102,6 +111,16 @@ class SqlSkill(BaseSkill):
                     "required": ["table_name"],
                 },
                 handler=self._get_table_schema,
+                metadata={
+                    "category": "read",
+                    "required_all": ["table_name"],
+                    "blackboard_writes": ["last_db_result"],
+                    "store_args": {"table_name": "last_table_name"},
+                    "store_result": ["last_db_result"],
+                },
+                result_parser=self._parse_schema_result,
+                keywords=["表结构", "字段信息", "schema", "列定义"],
+                intents=["inspect_table_schema"],
             ),
             ToolDefinition(
                 name="query_database",
@@ -124,6 +143,15 @@ class SqlSkill(BaseSkill):
                     "required": ["sql"],
                 },
                 handler=self._query_database,
+                metadata={
+                    "category": "read",
+                    "required_all": ["sql"],
+                    "blackboard_writes": ["last_db_result"],
+                    "store_result": ["last_db_result"],
+                },
+                result_parser=self._parse_query_result,
+                keywords=["SQL查询", "查数据库", "执行查询", "select"],
+                intents=["query_database"],
             ),
         ]
 
@@ -201,6 +229,73 @@ class SqlSkill(BaseSkill):
         if not sql.strip():
             return "请提供 SQL 查询语句。"
         return _execute_query(sql)
+
+    def _parse_list_tables_result(self, args: dict, result: str) -> dict | None:
+        tables = []
+        for line in result.splitlines():
+            match = re.match(r"^\s*-\s+([A-Za-z0-9_]+)$", line.strip())
+            if match:
+                tables.append(match.group(1))
+        return {
+            "action": "list_tables",
+            "keyword": str(args.get("keyword", "")).strip(),
+            "tables": tables,
+        }
+
+    def _parse_schema_result(self, args: dict, result: str) -> dict | None:
+        table_name = str(args.get("table_name", "")).strip()
+        fields = []
+        for line in result.splitlines():
+            line = line.rstrip()
+            if not line or line.startswith("表 `") or line.startswith("-") or line.startswith("字段名") or line.startswith("外键关系"):
+                continue
+            if "→" in line:
+                continue
+            parts = re.split(r"\s{2,}", line.strip())
+            if len(parts) >= 2:
+                fields.append(
+                    {
+                        "name": parts[0].strip(),
+                        "type": parts[1].strip(),
+                        "nullable": parts[2].strip() if len(parts) > 2 else "",
+                        "key": parts[3].strip() if len(parts) > 3 else "",
+                        "comment": parts[4].strip() if len(parts) > 4 else "",
+                    }
+                )
+        return {
+            "action": "get_table_schema",
+            "table_name": table_name,
+            "fields": fields,
+            "result": result[:500],
+        }
+
+    def _parse_query_result(self, args: dict, result: str) -> dict | None:
+        sql = str(args.get("sql", "")).strip()
+        lines = [line for line in result.splitlines() if line.strip()]
+        if len(lines) < 2:
+            return {"action": "query_database", "sql": sql, "rows": [], "result": result[:500]}
+
+        header = lines[0]
+        divider = lines[1]
+        if "|" not in header or set(divider) != {"-"}:
+            return {"action": "query_database", "sql": sql, "rows": [], "result": result[:500]}
+
+        columns = [part.strip() for part in header.split("|")]
+        rows = []
+        for line in lines[2:]:
+            if line.startswith("共 ") or line.startswith("... 共"):
+                break
+            values = [part.strip() for part in line.split("|")]
+            if len(values) == len(columns):
+                rows.append(dict(zip(columns, values)))
+
+        return {
+            "action": "query_database",
+            "sql": sql,
+            "columns": columns,
+            "rows": rows,
+            "result": result[:500],
+        }
 
 
 register(SqlSkill)

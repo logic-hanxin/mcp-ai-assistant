@@ -1,6 +1,7 @@
 """热点新闻 Skill - 获取热点新闻，支持手动触发推送"""
 
 import os
+import re
 import httpx
 from assistant.skills.base import BaseSkill, ToolDefinition, register
 
@@ -122,6 +123,13 @@ class NewsSkill(BaseSkill):
                     },
                 },
                 handler=self._get_hot_news,
+                metadata={
+                    "category": "read",
+                    "store_result": ["last_search_result"],
+                },
+                result_parser=self._parse_hot_news_result,
+                keywords=["热点新闻", "热搜", "新闻榜", "今日热点"],
+                intents=["get_hot_news"],
             ),
             ToolDefinition(
                 name="send_news_to_qq",
@@ -140,6 +148,15 @@ class NewsSkill(BaseSkill):
                     "required": ["qq_number"],
                 },
                 handler=self._send_news_to_qq,
+                metadata={
+                    "category": "notify",
+                    "side_effect": "external_message",
+                    "required_all": ["qq_number"],
+                    "store_args": {"qq_number": "last_target_qq"},
+                },
+                result_parser=self._parse_send_news_result,
+                keywords=["推送新闻", "发送热搜", "把新闻发给我"],
+                intents=["send_news_to_qq"],
             ),
         ]
 
@@ -169,6 +186,26 @@ class NewsSkill(BaseSkill):
             return f"发送失败: {data.get('message', '未知错误')}"
         except Exception as e:
             return f"发送失败: {e}"
+
+    def _parse_hot_news_result(self, args: dict, result: str) -> dict | None:
+        source = ""
+        items: list[dict] = []
+        for line in result.splitlines():
+            source_match = re.match(r"^【(.+)】$", line.strip())
+            if source_match:
+                source = source_match.group(1).strip()
+                continue
+            item_match = re.match(r"^\d+\.\s+(.+)$", line.strip())
+            if source and item_match:
+                items.append({"source": source, "title": item_match.group(1).strip()})
+        return {"news_items": items, "result": result[:500]}
+
+    def _parse_send_news_result(self, args: dict, result: str) -> dict | None:
+        return {
+            "qq_number": str(args.get("qq_number", "")).strip(),
+            "delivered": "已发送" in result,
+            "result": result[:300],
+        }
 
 
 register(NewsSkill)

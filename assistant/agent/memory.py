@@ -139,7 +139,7 @@ class Memory:
     def _init_db(self):
         """尝试初始化 DB 连接并恢复上下文"""
         try:
-            from assistant.agent.db import load_recent_messages, load_summaries
+            from assistant.agent.db_memory import load_recent_messages, load_summaries
             self._db_available = True
 
             # 恢复上一次会话的消息
@@ -182,7 +182,7 @@ class Memory:
         if not self._db_available:
             return
         try:
-            from assistant.agent.db import save_message
+            from assistant.agent.db_memory import save_message
             save_message(
                 session_id=self.session_id,
                 role=msg.get("role", ""),
@@ -228,7 +228,7 @@ class Memory:
         # 清理 DB 中的旧消息，只保留最近的
         if self._db_available:
             try:
-                from assistant.agent.db import delete_old_messages
+                from assistant.agent.db_memory import delete_old_messages
                 deleted = delete_old_messages(self.session_id, keep_recent=keep_recent)
                 if deleted:
                     print(f"[Memory] 清理了 DB 中 {deleted} 条旧消息")
@@ -242,7 +242,7 @@ class Memory:
         if not self._db_available:
             return
         try:
-            from assistant.agent.db import save_summary
+            from assistant.agent.db_memory import save_summary
             save_summary(self.session_id, summary, message_count)
         except Exception as e:
             print(f"[Memory] 摘要保存失败: {e}")
@@ -251,7 +251,7 @@ class Memory:
         if not self._db_available:
             return []
         try:
-            from assistant.agent.db import load_summaries
+            from assistant.agent.db_memory import load_summaries
             return load_summaries(self.session_id)
         except Exception:
             return []
@@ -264,7 +264,7 @@ class Memory:
         if not self._db_available:
             return
         try:
-            from assistant.agent.db import save_fact
+            from assistant.agent.db_memory import save_fact
             save_fact(self.user_id, key, value)
         except Exception as e:
             print(f"[Memory] 事实保存失败: {e}")
@@ -273,7 +273,7 @@ class Memory:
         if not self._db_available:
             return {}
         try:
-            from assistant.agent.db import load_facts
+            from assistant.agent.db_memory import load_facts
             return load_facts(self.user_id)
         except Exception:
             return {}
@@ -297,7 +297,7 @@ class Memory:
         self.short_term.clear()
         if self._db_available:
             try:
-                from assistant.agent.db import clear_session_messages
+                from assistant.agent.db_memory import clear_session_messages
                 clear_session_messages(self.session_id)
             except Exception as e:
                 print(f"[Memory] 清空会话失败: {e}")

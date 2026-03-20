@@ -80,6 +80,15 @@ class SearchSkill(BaseSkill):
                     "required": ["query"],
                 },
                 handler=self._search,
+                metadata={
+                    "category": "read",
+                    "blackboard_writes": ["last_search_result"],
+                    "required_all": ["query"],
+                    "store_result": ["last_search_result"],
+                },
+                result_parser=self._parse_search_result,
+                keywords=["搜索", "查资料", "查网页", "实时信息", "上网查"],
+                intents=["web_search", "find_information"],
             ),
         ]
 
@@ -100,6 +109,31 @@ class SearchSkill(BaseSkill):
             lines.append("")
 
         return "\n".join(lines)
+
+    def _parse_search_result(self, args: dict, result: str) -> dict | None:
+        query = str(args.get("query", "")).strip()
+        if not query:
+            return None
+
+        results = []
+        current: dict[str, str] | None = None
+        for line in result.splitlines():
+            title_match = re.match(r"^\d+\.\s+(.+)$", line.strip())
+            if title_match:
+                if current:
+                    results.append(current)
+                current = {"title": title_match.group(1).strip(), "snippet": ""}
+                continue
+            if current and line.strip():
+                current["snippet"] = line.strip()
+        if current:
+            results.append(current)
+
+        return {
+            "query": query,
+            "results": results,
+            "result": result[:500],
+        }
 
 
 register(SearchSkill)

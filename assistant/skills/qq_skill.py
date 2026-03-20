@@ -34,6 +34,18 @@ class QQMessageSkill(BaseSkill):
                     "required": ["qq_number", "content"],
                 },
                 handler=self._send_private,
+                metadata={
+                    "category": "notify",
+                    "side_effect": "external_message",
+                    "blackboard_reads": ["target_user"],
+                    "blackboard_writes": ["last_target_qq"],
+                    "required_all": ["content"],
+                    "required_any": [["qq_number"]],
+                    "store_args": {"qq_number": "last_target_qq", "content": "last_shared_result"},
+                },
+                result_parser=self._parse_send_private_result,
+                keywords=["私聊发送", "发QQ消息", "通知某人", "发私信"],
+                intents=["send_private_message"],
             ),
             ToolDefinition(
                 name="send_qq_group_message",
@@ -60,6 +72,22 @@ class QQMessageSkill(BaseSkill):
                     "required": ["group_id", "content"],
                 },
                 handler=self._send_group,
+                metadata={
+                    "category": "notify",
+                    "side_effect": "external_message",
+                    "blackboard_reads": ["target_group", "target_user"],
+                    "blackboard_writes": ["last_target_group", "last_target_qq"],
+                    "required_all": ["content"],
+                    "required_any": [["group_id"]],
+                    "store_args": {
+                        "group_id": "last_target_group",
+                        "at_qq": "last_target_qq",
+                        "content": "last_shared_result",
+                    },
+                },
+                result_parser=self._parse_send_group_result,
+                keywords=["群消息", "发群通知", "群里发送", "艾特群成员"],
+                intents=["send_group_message"],
             ),
         ]
 
@@ -102,6 +130,25 @@ class QQMessageSkill(BaseSkill):
             return f"发送失败: {data.get('message', data.get('wording', '未知错误'))}"
         except Exception as e:
             return f"发送失败: {e}"
+
+    def _parse_send_private_result(self, args: dict, result: str) -> dict | None:
+        return {
+            "target_type": "private",
+            "qq_number": str(args.get("qq_number", "")).strip(),
+            "content": str(args.get("content", "")).strip(),
+            "delivered": "已发送" in result,
+            "result": result[:300],
+        }
+
+    def _parse_send_group_result(self, args: dict, result: str) -> dict | None:
+        return {
+            "target_type": "group",
+            "group_id": str(args.get("group_id", "")).strip(),
+            "at_qq": str(args.get("at_qq", "")).strip(),
+            "content": str(args.get("content", "")).strip(),
+            "delivered": "已发送" in result,
+            "result": result[:300],
+        }
 
 
 register(QQMessageSkill)

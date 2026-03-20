@@ -21,6 +21,12 @@ class FileSkill(BaseSkill):
                     "required": ["file_path"],
                 },
                 handler=self._read_file,
+                metadata={
+                    "category": "read",
+                    "required_all": ["file_path"],
+                },
+                keywords=["读文件", "查看文件", "打开文件内容"],
+                intents=["read_file"],
             ),
             ToolDefinition(
                 name="list_directory",
@@ -32,6 +38,11 @@ class FileSkill(BaseSkill):
                     },
                 },
                 handler=self._list_directory,
+                metadata={
+                    "category": "read",
+                },
+                keywords=["列目录", "查看文件夹", "浏览目录"],
+                intents=["list_directory"],
             ),
         ]
 

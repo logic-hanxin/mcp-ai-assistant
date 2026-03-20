@@ -20,7 +20,7 @@ import json
 import math
 from typing import Optional
 
-from assistant.agent import db
+from assistant.agent import db_knowledge as db
 
 
 # ============================================================

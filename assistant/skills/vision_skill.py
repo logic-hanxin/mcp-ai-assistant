@@ -43,6 +43,12 @@ class VisionSkill(BaseSkill):
                     "required": ["image_url"],
                 },
                 handler=self._ocr_image,
+                metadata={
+                    "category": "read",
+                    "required_all": ["image_url"],
+                },
+                keywords=["OCR", "识别文字", "图片转文字", "提取图片文字"],
+                intents=["ocr_image"],
             ),
             ToolDefinition(
                 name="understand_image",
@@ -63,6 +69,12 @@ class VisionSkill(BaseSkill):
                     "required": ["image_url"],
                 },
                 handler=self._understand_image,
+                metadata={
+                    "category": "read",
+                    "required_all": ["image_url"],
+                },
+                keywords=["图片理解", "分析图片", "图片内容", "看图说话"],
+                intents=["understand_image"],
             ),
             ToolDefinition(
                 name="scan_qrcode",
@@ -78,6 +90,12 @@ class VisionSkill(BaseSkill):
                     "required": ["image_url"],
                 },
                 handler=self._scan_qrcode,
+                metadata={
+                    "category": "read",
+                    "required_all": ["image_url"],
+                },
+                keywords=["二维码识别", "扫码", "条形码识别"],
+                intents=["scan_qrcode"],
             ),
         ]
 

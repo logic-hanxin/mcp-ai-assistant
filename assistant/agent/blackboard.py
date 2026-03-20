@@ -222,6 +222,26 @@ class Blackboard:
                 results = [r for r in results if r.step_id == step_id]
             return list(results)
 
+    def clear_scope(self, prefix: str):
+        """按作用域前缀清理共享变量、实体和中间结果。"""
+        scoped_prefix = prefix if prefix.endswith(":") else f"{prefix}:"
+        with self._lock:
+            self._shared_memory = {
+                k: v for k, v in self._shared_memory.items()
+                if not k.startswith(scoped_prefix)
+            }
+            for entity_type, entities in list(self._entities.items()):
+                self._entities[entity_type] = [
+                    e for e in entities if not e.key.startswith(scoped_prefix)
+                ]
+                if not self._entities[entity_type]:
+                    self._entities.pop(entity_type, None)
+            self._intermediate_results = [
+                r for r in self._intermediate_results
+                if not r.step_id.startswith(scoped_prefix)
+                and not r.milestone.startswith(scoped_prefix)
+            ]
+
     # ============ 事件系统 ============
 
     def subscribe(self, event_type: str, handler: Callable):

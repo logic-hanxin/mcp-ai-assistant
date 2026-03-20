@@ -1,5 +1,6 @@
 """定位 Skill - IP定位、手机号归属地查询"""
 
+import re
 import httpx
 from assistant.skills.base import BaseSkill, ToolDefinition, register
 
@@ -27,6 +28,12 @@ class LocationSkill(BaseSkill):
                     },
                 },
                 handler=self._ip_location,
+                metadata={
+                    "category": "read",
+                },
+                result_parser=self._parse_ip_location_result,
+                keywords=["IP定位", "查IP地址", "地理位置", "公网IP位置"],
+                intents=["ip_location"],
             ),
             ToolDefinition(
                 name="phone_area",
@@ -42,6 +49,13 @@ class LocationSkill(BaseSkill):
                     "required": ["phone"],
                 },
                 handler=self._phone_area,
+                metadata={
+                    "category": "read",
+                    "required_all": ["phone"],
+                },
+                result_parser=self._parse_phone_area_result,
+                keywords=["手机号归属地", "查手机号", "运营商查询"],
+                intents=["phone_area"],
             ),
         ]
 
@@ -89,6 +103,30 @@ class LocationSkill(BaseSkill):
 
         location = f"{province} {city}".strip() if city else province
         return f"手机号: {phone}\n归属地: {location}\n运营商: {sp}"
+
+    def _parse_ip_location_result(self, args: dict, result: str) -> dict | None:
+        ip = ""
+        location = ""
+        isp = ""
+        for line in result.splitlines():
+            if line.startswith("IP:"):
+                ip = line.split(":", 1)[1].strip()
+            elif line.startswith("位置:"):
+                location = line.split(":", 1)[1].strip()
+            elif line.startswith("运营商:"):
+                isp = line.split(":", 1)[1].strip()
+        return {"ip": ip, "location": location, "isp": isp}
+
+    def _parse_phone_area_result(self, args: dict, result: str) -> dict | None:
+        phone = str(args.get("phone", "")).strip()
+        location = ""
+        isp = ""
+        for line in result.splitlines():
+            if line.startswith("归属地:"):
+                location = line.split(":", 1)[1].strip()
+            elif line.startswith("运营商:"):
+                isp = line.split(":", 1)[1].strip()
+        return {"phone": phone, "location": location, "isp": isp}
 
 
 register(LocationSkill)

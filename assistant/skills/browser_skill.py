@@ -50,6 +50,13 @@ class BrowserSkill(BaseSkill):
                     "required": ["url"],
                 },
                 handler=self._browse_page,
+                metadata={
+                    "category": "read",
+                    "required_all": ["url"],
+                    "store_result": ["last_search_result"],
+                },
+                keywords=["网页爬取", "抓网页", "读取网页内容"],
+                intents=["browse_page"],
             ),
             ToolDefinition(
                 name="browse_with_headers",
@@ -75,6 +82,13 @@ class BrowserSkill(BaseSkill):
                     "required": ["url"],
                 },
                 handler=self._browse_with_headers,
+                metadata={
+                    "category": "read",
+                    "required_all": ["url"],
+                    "store_result": ["last_search_result"],
+                },
+                keywords=["带请求头爬取", "模拟浏览器访问", "headers抓取"],
+                intents=["browse_with_headers"],
             ),
             ToolDefinition(
                 name="post_form",
@@ -94,6 +108,14 @@ class BrowserSkill(BaseSkill):
                     "required": ["url", "data"],
                 },
                 handler=self._post_form,
+                metadata={
+                    "category": "write",
+                    "side_effect": "external_trigger",
+                    "required_all": ["url", "data"],
+                    "store_result": ["last_search_result"],
+                },
+                keywords=["提交表单", "POST请求", "登录提交"],
+                intents=["post_form"],
             ),
             ToolDefinition(
                 name="get_json",
@@ -114,6 +136,13 @@ class BrowserSkill(BaseSkill):
                     "required": ["url"],
                 },
                 handler=self._get_json,
+                metadata={
+                    "category": "read",
+                    "required_all": ["url"],
+                    "store_result": ["last_search_result"],
+                },
+                keywords=["获取JSON", "查接口", "API返回数据"],
+                intents=["get_json"],
             ),
         ]
 

@@ -44,30 +44,32 @@ async def get_agent(user_id: str) -> AgentCore:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _config, _server_script
+    background_tasks: list[asyncio.Task] = []
     _config = load_config()
     _server_script = str(Path(__file__).resolve().parent.parent / "mcp" / "server.py")
 
     # 初始化记忆数据库表
     try:
-        from assistant.agent.db import init_tables
+        from assistant.agent.db_core import init_tables
         init_tables()
     except Exception as e:
         print(f"[API] 记忆数据库初始化失败，将使用纯内存模式: {e}")
 
     # 启动后台检查器
-    reminder_task = asyncio.create_task(reminder_loop())
-    github_task = asyncio.create_task(github_check_loop())
-    news_task = asyncio.create_task(news_check_loop())
-    site_task = asyncio.create_task(site_check_loop())
-    workflow_task = asyncio.create_task(workflow_loop())
+    background_tasks = [
+        asyncio.create_task(reminder_loop()),
+        asyncio.create_task(github_check_loop()),
+        asyncio.create_task(news_check_loop()),
+        asyncio.create_task(site_check_loop()),
+        asyncio.create_task(workflow_loop()),
+    ]
     print("[API] AI助手服务已启动")
     yield
 
-    reminder_task.cancel()
-    github_task.cancel()
-    news_task.cancel()
-    site_task.cancel()
-    workflow_task.cancel()
+    for task in background_tasks:
+        task.cancel()
+    if background_tasks:
+        await asyncio.gather(*background_tasks, return_exceptions=True)
     for agent in _agents.values():
         await agent.close()
     _agents.clear()

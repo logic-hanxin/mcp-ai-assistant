@@ -83,6 +83,11 @@ class Plan:
 PLAN_SYSTEM_PROMPT = """你是一个任务规划器。用户会给你一个目标和可用工具列表。
 请分析目标，判断是否需要分步执行。
 
+规划原则:
+- 优先用 read/query 类工具收集信息，再用 write/notify 类工具执行动作
+- 有 side_effect 的工具（发消息、写库、创建提醒、创建监控等）应尽量放在信息确认之后
+- 如果工具支持 blackboard_reads / blackboard_writes，可以把它理解为能复用上下文或产出共享结果
+
 如果是简单任务（只需一步或直接回答），返回:
 {"needs_plan": false}
 
@@ -99,14 +104,51 @@ class Planner:
         self.llm = llm_client
         self.model = model
 
-    def create_plan(self, user_input: str, available_tools: list[dict]) -> Plan | None:
+    def _format_tool_descriptions(
+        self,
+        available_tools: list[dict],
+        tool_metadata: dict[str, dict] | None = None,
+        limit: int | None = None,
+    ) -> str:
+        lines = []
+        tools = available_tools[:limit] if limit else available_tools
+        for tool in tools:
+            fn = tool.get("function", {})
+            name = fn.get("name", "")
+            description = fn.get("description", "")
+            meta = (tool_metadata or {}).get(name, {})
+
+            tags = []
+            if meta.get("category"):
+                tags.append(f"category={meta['category']}")
+            if meta.get("side_effect"):
+                tags.append(f"side_effect={meta['side_effect']}")
+            if meta.get("blackboard_reads"):
+                tags.append(f"bb_reads={','.join(meta['blackboard_reads'])}")
+            if meta.get("blackboard_writes"):
+                tags.append(f"bb_writes={','.join(meta['blackboard_writes'])}")
+            if meta.get("keywords"):
+                tags.append(f"keywords={','.join(meta['keywords'][:5])}")
+            if meta.get("intents"):
+                tags.append(f"intents={','.join(meta['intents'][:4])}")
+
+            tag_text = f" [{' | '.join(tags)}]" if tags else ""
+            lines.append(f"- {name}: {description}{tag_text}")
+        return "\n".join(lines)
+
+    def create_plan(
+        self,
+        user_input: str,
+        available_tools: list[dict],
+        tool_metadata: dict[str, dict] | None = None,
+    ) -> Plan | None:
         """
         分析用户请求，决定是否需要创建执行计划。
         返回 Plan 或 None（简单任务不需要计划）。
         """
-        tool_descriptions = "\n".join(
-            f"- {t['function']['name']}: {t['function']['description']}"
-            for t in available_tools
+        tool_descriptions = self._format_tool_descriptions(
+            available_tools,
+            tool_metadata=tool_metadata,
         )
 
         response = self.llm.chat.completions.create(
@@ -293,7 +335,21 @@ class HierarchicalPlanner:
         self.llm = llm_client
         self.model = model
 
-    def create_hierarchical_plan(self, user_input: str, available_tools: list[dict]) -> HierarchicalPlan | None:
+    def _format_tool_descriptions(
+        self,
+        available_tools: list[dict],
+        tool_metadata: dict[str, dict] | None = None,
+        limit: int | None = None,
+    ) -> str:
+        planner = Planner(self.llm, self.model)
+        return planner._format_tool_descriptions(available_tools, tool_metadata, limit)
+
+    def create_hierarchical_plan(
+        self,
+        user_input: str,
+        available_tools: list[dict],
+        tool_metadata: dict[str, dict] | None = None,
+    ) -> HierarchicalPlan | None:
         """
         创建分层执行计划
         """
@@ -329,6 +385,7 @@ class HierarchicalPlanner:
                     milestone_desc=m.get("description", ""),
                     expert_type=m.get("expert_type", "general"),
                     available_tools=available_tools,
+                    tool_metadata=tool_metadata,
                 )
                 milestone.steps = steps
 
@@ -349,6 +406,7 @@ class HierarchicalPlanner:
         milestone_desc: str,
         expert_type: str,
         available_tools: list[dict],
+        tool_metadata: dict[str, dict] | None = None,
     ) -> list[PlanStep]:
         """Sub-Planner: 为单个里程碑生成具体步骤"""
         # 筛选该专家可用的工具
@@ -358,9 +416,10 @@ class HierarchicalPlanner:
         else:
             filtered_tools = available_tools
 
-        tool_descriptions = "\n".join(
-            f"- {t['function']['name']}: {t['function']['description']}"
-            for t in filtered_tools[:30]  # 限制数量避免 token 溢出
+        tool_descriptions = self._format_tool_descriptions(
+            filtered_tools,
+            tool_metadata=tool_metadata,
+            limit=30,
         )
 
         try:

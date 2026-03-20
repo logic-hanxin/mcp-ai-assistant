@@ -80,6 +80,12 @@ class WzrySkill(BaseSkill):
                     "required": ["hero"],
                 },
                 handler=self._query_hero_power,
+                metadata={
+                    "category": "read",
+                    "required_all": ["hero"],
+                },
+                keywords=["王者战力", "英雄战力", "国标省标", "查英雄分数"],
+                intents=["query_hero_power"],
             ),
             ToolDefinition(
                 name="search_hero",
@@ -95,6 +101,11 @@ class WzrySkill(BaseSkill):
                     "required": [],
                 },
                 handler=self._search_hero,
+                metadata={
+                    "category": "read",
+                },
+                keywords=["英雄列表", "搜索英雄", "查王者英雄"],
+                intents=["search_hero"],
             ),
         ]
 

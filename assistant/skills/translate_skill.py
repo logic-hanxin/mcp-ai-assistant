@@ -88,6 +88,12 @@ class TranslateSkill(BaseSkill):
                     "required": ["text"],
                 },
                 handler=self._translate,
+                metadata={
+                    "category": "read",
+                    "required_all": ["text"],
+                },
+                keywords=["翻译", "中译英", "英译中", "多语言翻译"],
+                intents=["translate_text"],
             ),
         ]
 

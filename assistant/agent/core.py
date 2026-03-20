@@ -26,8 +26,12 @@ from assistant.mcp.client import MCPClient
 from assistant.agent.memory import Memory
 from assistant.agent.planner import Planner
 from assistant.agent.reflection import Reflection
-from assistant.agent.router import Router, EXPERT_PROFILES
+from assistant.agent.router import Router
 from assistant.agent.blackboard import Blackboard
+from assistant.agent.tool_hydrators import ToolHydrationContext, build_default_tool_hydrators, hydrate_tool_args
+from assistant.agent.tool_adapters import ToolEvent, build_default_tool_adapters, dispatch_tool_adapters
+from assistant.agent.tool_policies import apply_tool_policies, build_default_tool_policies
+from assistant.skills.base import discover_tool_definitions, discover_tool_metadata
 
 
 SYSTEM_PROMPT = """你是「小彩云」，彩云协会的智能助手，也是群里的一员。
@@ -65,6 +69,8 @@ SYSTEM_PROMPT = """你是「小彩云」，彩云协会的智能助手，也是�
 
 {user_facts}
 
+{blackboard_context}
+
 {plan_context}
 
 【⚠️ 最高优先级】小彩云守则 - 必须严格遵守:
@@ -92,11 +98,33 @@ class AgentCore:
         self.memory = Memory(session_id=session_id, user_id=user_id or session_id)
         self.planner = Planner(self.llm_client, self.model)
         self.reflection = Reflection(self.llm_client, self.model)
-        self.router = Router(self.llm_client, self.model)
+        try:
+            self.tool_definitions = discover_tool_definitions()
+            self.tool_metadata = discover_tool_metadata()
+        except Exception:
+            self.tool_definitions = {}
+            self.tool_metadata = {}
+        self.router = Router(self.llm_client, self.model, tool_metadata=self.tool_metadata)
         # 黑板模式 - 多Agent共享状态
         self.blackboard = Blackboard.get_instance()
+        self.tool_hydrators = build_default_tool_hydrators()
+        self.tool_adapters = build_default_tool_adapters()
+        self.tool_policies = build_default_tool_policies()
         # 会话上下文 (QQ号、群号等，由外部注入)
         self.session_context: dict = {}
+
+    def _bb_scope(self) -> str:
+        """当前会话在黑板中的作用域前缀。"""
+        return f"session:{self.memory.session_id}"
+
+    def _bb_scoped_key(self, key: str) -> str:
+        return f"{self._bb_scope()}:{key}"
+
+    def _bb_scoped_step_id(self, step_id: str) -> str:
+        return f"{self._bb_scope()}:{step_id}"
+
+    def _bb_scoped_milestone(self, milestone: str) -> str:
+        return f"{self._bb_scope()}:{milestone}"
 
     async def connect(self, server_script: str):
         """连接 MCP Server"""
@@ -137,7 +165,7 @@ class AgentCore:
         # 1. Router: 意图分类
         recent_ctx = self._get_recent_context()
         expert_key = self.router.classify(user_input, recent_ctx)
-        expert = EXPERT_PROFILES.get(expert_key)
+        expert = self.router.get_profiles().get(expert_key)
 
         if expert:
             print(f"  [路由] → {expert['name']} ({expert_key})")
@@ -145,7 +173,7 @@ class AgentCore:
             print(f"  [路由] → 通用模式 (general)")
 
         # 2. Planner: 判断是否需要分步执行 (复杂任务用全量工具)
-        plan = self.planner.create_plan(user_input, self.mcp.tools)
+        plan = self.planner.create_plan(user_input, self.mcp.tools, tool_metadata=self.tool_metadata)
 
         if plan:
             # 复杂任务: 按计划逐步执行，使用全量工具
@@ -192,19 +220,31 @@ class AgentCore:
             for tool_call in message.tool_calls:
                 func_name = tool_call.function.name
                 func_args = json.loads(tool_call.function.arguments)
+                func_args = self._hydrate_tool_args(func_name, func_args)
                 print(f"  [工具] {func_name}({json.dumps(func_args, ensure_ascii=False)})")
 
-                # 执行工具
-                tool_result = await self.mcp.call_tool(func_name, func_args)
+                policy_error = self._apply_tool_policy(func_name, func_args)
+                tool_call_result = None
+                if policy_error:
+                    tool_result = policy_error
+                else:
+                    tool_call_result = await self.mcp.call_tool_ex(func_name, func_args)
+                    tool_result = tool_call_result.text
 
                 # 写入黑板（多Agent共享状态）
-                self._update_blackboard(func_name, func_args, tool_result)
+                self._update_blackboard(
+                    func_name,
+                    func_args,
+                    tool_result,
+                    structured_result=(None if policy_error else tool_call_result.structured),
+                )
 
                 # Reflection: 评估结果
                 ref = self.reflection.evaluate(func_name, func_args, tool_result, user_input)
                 if ref.should_retry and ref.strategy == "retry_same":
                     print(f"  [反思] 结果异常，重试: {ref.reasoning}")
-                    tool_result = await self.mcp.call_tool(func_name, func_args)
+                    retry_result = await self.mcp.call_tool_ex(func_name, func_args)
+                    tool_result = retry_result.text
                 elif ref.strategy == "give_up":
                     print(f"  [反思] 放弃重试: {ref.reasoning}")
 
@@ -245,6 +285,7 @@ class AgentCore:
                 f"总目标: {plan.goal}\n"
                 f"当前步骤: {step.description}\n"
                 f"建议工具: {step.tool_hint}\n"
+                f"{self._build_blackboard_context(limit_results=5)}\n"
                 f"请执行这一步。"
             )
 
@@ -270,23 +311,37 @@ class AgentCore:
                 for tc in message.tool_calls:
                     fn = tc.function.name
                     args = json.loads(tc.function.arguments)
+                    args = self._hydrate_tool_args(fn, args)
                     print(f"    [工具] {fn}({json.dumps(args, ensure_ascii=False)})")
 
-                    result = await self.mcp.call_tool(fn, args)
+                    policy_error = self._apply_tool_policy(fn, args)
+                    call_result = None
+                    if policy_error:
+                        result = policy_error
+                    else:
+                        call_result = await self.mcp.call_tool_ex(fn, args)
+                        result = call_result.text
 
                     # 写入黑板
                     self.blackboard.write_result(
-                        step_id=f"step_{step.step_id}",
-                        milestone="plan",
+                        step_id=self._bb_scoped_step_id(f"step_{step.step_id}"),
+                        milestone=self._bb_scoped_milestone("plan"),
                         tool_name=fn,
                         result=result[:500],
+                    )
+                    self._update_blackboard(
+                        fn,
+                        args,
+                        result,
+                        structured_result=(None if policy_error else call_result.structured),
                     )
 
                     # Reflection
                     ref = self.reflection.evaluate(fn, args, result, step.description)
                     if ref.should_retry:
                         print(f"    [反思] 重试: {ref.reasoning}")
-                        result = await self.mcp.call_tool(fn, args)
+                        retry_result = await self.mcp.call_tool_ex(fn, args)
+                        result = retry_result.text
 
                     messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
 
@@ -340,39 +395,181 @@ class AgentCore:
     # ----------------------------------------------------------
     # 黑板模式 - 多Agent共享状态
     # ----------------------------------------------------------
-    def _update_blackboard(self, tool_name: str, tool_args: dict, tool_result: str):
+    def _update_blackboard(
+        self,
+        tool_name: str,
+        tool_args: dict,
+        tool_result: str,
+        structured_result: dict | None = None,
+    ):
         """将工具执行结果写入黑板"""
         try:
-            # 根据工具类型识别实体
-            if tool_name in ("list_contacts", "find_qq_by_name"):
-                # 联系人信息
-                if "联系人" in tool_result or "QQ号" in tool_result:
-                    # 解析联系人结果并写入
-                    pass  # 简化处理
-
-            elif tool_name in ("get_weather",):
-                # 天气信息 - 写入共享变量
-                self.blackboard.set("last_weather", tool_result[:200])
-
-            elif tool_name in ("search_knowledge",):
-                # 知识库检索结果
-                self.blackboard.set("last_knowledge_result", tool_result[:500])
+            self._record_blackboard_variables(tool_name, tool_args, tool_result)
+            adapters = getattr(self, "tool_adapters", None) or build_default_tool_adapters()
+            dispatch_tool_adapters(
+                self,
+                ToolEvent(
+                    tool_name=tool_name,
+                    tool_args=tool_args,
+                    tool_result=tool_result,
+                    structured_result=structured_result,
+                ),
+                adapters,
+            )
 
             # 写入中间结果
             self.blackboard.write_result(
-                step_id=f"react_{tool_name}",
-                milestone="general",
+                step_id=self._bb_scoped_step_id(f"react_{tool_name}"),
+                milestone=self._bb_scoped_milestone("general"),
                 tool_name=tool_name,
                 result=tool_result[:500],
             )
         except Exception as e:
             print(f"  [黑板] 更新失败: {e}")
 
+    def _record_blackboard_variables(self, tool_name: str, tool_args: dict, tool_result: str):
+        """把关键工具结果写成可复用共享变量。"""
+        meta = self.tool_metadata.get(tool_name, {})
+
+        for arg_key, bb_key in meta.get("store_args", {}).items():
+            value = str(tool_args.get(arg_key, "")).strip()
+            if value:
+                self.blackboard.set(self._bb_scoped_key(bb_key), value[:500])
+
+        for bb_key in meta.get("store_result", []):
+            self.blackboard.set(self._bb_scoped_key(bb_key), tool_result[:500])
+
+        if tool_name in ("query_database", "list_tables", "get_table_schema"):
+            self.blackboard.set(self._bb_scoped_key("last_db_result"), tool_result[:500])
+
+        elif tool_name in ("web_search", "browse_page", "get_json"):
+            self.blackboard.set(self._bb_scoped_key("last_search_result"), tool_result[:500])
+
+    def _build_blackboard_context(self, limit_results: int = 4) -> str:
+        """从黑板中提取当前会话可复用上下文。"""
+        scope = self._bb_scope()
+        variables = self.blackboard.get_all_variables()
+        scoped_vars = {
+            key[len(scope) + 1:]: value
+            for key, value in variables.items()
+            if key.startswith(f"{scope}:")
+        }
+
+        contacts = []
+        for entity in self.blackboard.get_entities("contact"):
+            if entity.key.startswith(f"{scope}:"):
+                value = entity.value or {}
+                qq = value.get("qq", "")
+                name = value.get("name", "")
+                if qq and name:
+                    contacts.append(f"{name}={qq}")
+
+        results = []
+        for item in self.blackboard.get_results():
+            if item.step_id.startswith(f"{scope}:"):
+                results.append(item)
+        results = results[-limit_results:]
+
+        parts = []
+        if scoped_vars:
+            parts.append("黑板共享变量:")
+            for key, value in sorted(scoped_vars.items()):
+                parts.append(f"- {key}: {str(value)[:160]}")
+        if contacts:
+            parts.append("黑板联系人:")
+            for item in contacts[-5:]:
+                parts.append(f"- {item}")
+        if results:
+            parts.append("黑板最近结果:")
+            for item in results:
+                parts.append(f"- {item.tool_name}: {item.result[:120]}")
+
+        if not parts:
+            return ""
+        return "[黑板上下文]\n" + "\n".join(parts)
+
+    def _hydrate_tool_args(self, tool_name: str, tool_args: dict) -> dict:
+        """在不覆盖已有参数的前提下，用会话上下文和黑板补全高频缺失参数。"""
+        session_user = str(self.session_context.get("user_qq", "")).strip()
+        session_group = str(self.session_context.get("group_id", "")).strip()
+
+        bb_user = str(self.blackboard.get(self._bb_scoped_key("last_target_qq"), "")).strip()
+        bb_group = str(self.blackboard.get(self._bb_scoped_key("last_target_group"), "")).strip()
+        bb_repo = str(self.blackboard.get(self._bb_scoped_key("last_github_repo"), "")).strip()
+        bb_branch = str(self.blackboard.get(self._bb_scoped_key("last_github_branch"), "")).strip()
+        bb_city = str(self.blackboard.get(self._bb_scoped_key("last_city"), "")).strip()
+        if not bb_user:
+            bb_user = self._latest_contact_qq()
+        shareable_text = self._latest_shareable_result()
+        hydrators = getattr(self, "tool_hydrators", None) or build_default_tool_hydrators()
+        return hydrate_tool_args(
+            ToolHydrationContext(
+                tool_name=tool_name,
+                tool_args=dict(tool_args),
+                session_user=session_user,
+                session_group=session_group,
+                bb_user=bb_user,
+                bb_group=bb_group,
+                bb_repo=bb_repo,
+                bb_branch=bb_branch,
+                bb_city=bb_city,
+                shareable_text=shareable_text,
+            ),
+            hydrators,
+        )
+
+    def _apply_tool_policy(self, tool_name: str, tool_args: dict) -> str | None:
+        """根据 tool metadata 做统一执行前校验。返回错误文本表示阻止执行。"""
+        meta = self.tool_metadata.get(tool_name, {}) if hasattr(self, "tool_metadata") else {}
+        policies = getattr(self, "tool_policies", None) or build_default_tool_policies()
+        return apply_tool_policies(
+            tool_name=tool_name,
+            tool_args=tool_args,
+            tool_metadata=meta,
+            session_context=self.session_context,
+            policies=policies,
+        )
+
+    def _latest_contact_qq(self) -> str:
+        latest_entity = None
+        for entity in self.blackboard.get_entities("contact"):
+            if not entity.key.startswith(f"{self._bb_scope()}:"):
+                continue
+            if latest_entity is None or entity.discovered_at > latest_entity.discovered_at:
+                latest_entity = entity
+        if latest_entity and isinstance(latest_entity.value, dict):
+            return str(latest_entity.value.get("qq", "")).strip()
+        return ""
+
+    def _latest_shareable_result(self) -> str:
+        """提取最近适合转发/保存的结果文本。"""
+        for key in (
+            "last_shared_result",
+            "last_knowledge_result",
+            "last_search_result",
+            "last_db_result",
+            "last_note_result",
+            "last_weather",
+            "last_reminder",
+        ):
+            value = str(self.blackboard.get(self._bb_scoped_key(key), "")).strip()
+            if value:
+                return value
+
+        results = [
+            item for item in self.blackboard.get_results()
+            if item.step_id.startswith(f"{self._bb_scope()}:")
+        ]
+        if results:
+            return results[-1].result[:500]
+        return ""
+
     # ----------------------------------------------------------
     # 系统提示构建
     # ----------------------------------------------------------
     def _build_system_prompt(self, plan_context: str = "", expert_hint: str = "") -> str:
         facts = self.memory.get_facts_prompt()
+        blackboard_context = self._build_blackboard_context()
         # 构建会话上下文描述
         ctx_parts = []
         if self.session_context.get("user_qq"):
@@ -386,7 +583,7 @@ class AgentCore:
         # 加载守则
         rules_text = ""
         try:
-            from assistant.agent.db import load_rules_text
+            from assistant.agent.db_misc import load_rules_text
             rules_text = load_rules_text()
         except Exception:
             pass
@@ -394,6 +591,7 @@ class AgentCore:
         return SYSTEM_PROMPT.format(
             session_context=session_ctx,
             user_facts=facts,
+            blackboard_context=blackboard_context,
             plan_context=f"当前执行计划:\n{plan_context}" if plan_context else "",
             rules=rules_text,
             expert_hint=f"[专家模式] {expert_hint}" if expert_hint else "",
@@ -409,6 +607,7 @@ class AgentCore:
         self.memory.save_session()
         self.memory.clear_short_term()
         self.reflection.reset()
+        self.blackboard.clear_scope(self._bb_scope())
         print("对话历史已清空（已保存到长期记忆）。")
 
     async def close(self):

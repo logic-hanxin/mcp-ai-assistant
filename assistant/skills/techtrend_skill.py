@@ -151,6 +151,11 @@ class TechTrendSkill(BaseSkill):
                     "required": [],
                 },
                 handler=self._github_trending,
+                metadata={
+                    "category": "read",
+                },
+                keywords=["GitHub热门", "热门项目", "开源趋势", "技术趋势"],
+                intents=["github_trending"],
             ),
             ToolDefinition(
                 name="hacker_news_top",
@@ -170,6 +175,11 @@ class TechTrendSkill(BaseSkill):
                     "required": [],
                 },
                 handler=self._hacker_news_top,
+                metadata={
+                    "category": "read",
+                },
+                keywords=["Hacker News", "技术新闻", "HN热榜"],
+                intents=["hacker_news_top"],
             ),
             ToolDefinition(
                 name="qa_tech_recommend",
@@ -189,6 +199,11 @@ class TechTrendSkill(BaseSkill):
                     "required": [],
                 },
                 handler=self._qa_tech_recommend,
+                metadata={
+                    "category": "read",
+                },
+                keywords=["测试开发推荐", "自动化测试工具", "CI/CD工具", "QA技术"],
+                intents=["qa_tech_recommend"],
             ),
         ]
 

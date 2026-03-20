@@ -48,6 +48,13 @@ class DocumentSkill(BaseSkill):
                     "required": ["file_path"],
                 },
                 handler=self._import_document,
+                metadata={
+                    "category": "write",
+                    "side_effect": "data_write",
+                    "required_all": ["file_path"],
+                },
+                keywords=["导入文档", "文档入库", "上传知识库"],
+                intents=["import_document"],
             ),
             ToolDefinition(
                 name="parse_document",
@@ -68,6 +75,12 @@ class DocumentSkill(BaseSkill):
                     "required": ["file_path"],
                 },
                 handler=self._parse_document,
+                metadata={
+                    "category": "read",
+                    "required_all": ["file_path"],
+                },
+                keywords=["解析文档", "预览文档", "读取PDF", "读取Word"],
+                intents=["parse_document"],
             ),
         ]
 

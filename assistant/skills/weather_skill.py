@@ -44,6 +44,17 @@ class WeatherSkill(BaseSkill):
                     "required": ["city"],
                 },
                 handler=self._get_weather,
+                metadata={
+                    "category": "read",
+                    "blackboard_reads": ["last_city"],
+                    "blackboard_writes": ["last_city", "last_weather"],
+                    "required_all": ["city"],
+                    "store_args": {"city": "last_city"},
+                    "store_result": ["last_weather"],
+                },
+                result_parser=self._parse_weather_result,
+                keywords=["天气", "查天气", "今天天气", "天气预报"],
+                intents=["get_weather"],
             ),
         ]
 
@@ -88,6 +99,12 @@ class WeatherSkill(BaseSkill):
 
         except (KeyError, IndexError) as e:
             return f"解析 {city} 天气数据出错: {e}"
+
+    def _parse_weather_result(self, args: dict, result: str) -> dict | None:
+        city = str(args.get("city", "")).strip()
+        if city:
+            return {"city": city, "weather": result[:300]}
+        return None
 
 
 register(WeatherSkill)

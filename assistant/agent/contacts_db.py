@@ -9,7 +9,7 @@ from __future__ import annotations
 
 _db_ok = True
 try:
-    from assistant.agent.db import (
+    from assistant.agent.db_contacts import (
         contact_upsert_user, contact_upsert_group,
         contact_set_user_name, contact_set_group_name,
         contact_get_users, contact_get_groups,

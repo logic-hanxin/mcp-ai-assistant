@@ -1,5 +1,6 @@
 """音乐推荐 Skill - 基于网易云音乐 API"""
 
+import re
 import httpx
 from assistant.skills.base import BaseSkill, ToolDefinition, register
 
@@ -46,6 +47,13 @@ class MusicSkill(BaseSkill):
                     "required": ["keyword"],
                 },
                 handler=self._search_music,
+                metadata={
+                    "category": "read",
+                    "required_all": ["keyword"],
+                },
+                result_parser=self._parse_search_music_result,
+                keywords=["搜歌", "音乐搜索", "找歌曲", "查歌名"],
+                intents=["search_music"],
             ),
             ToolDefinition(
                 name="music_hot_list",
@@ -68,6 +76,12 @@ class MusicSkill(BaseSkill):
                     },
                 },
                 handler=self._hot_list,
+                metadata={
+                    "category": "read",
+                },
+                result_parser=self._parse_hot_list_result,
+                keywords=["热歌榜", "新歌榜", "音乐榜单", "热门歌曲"],
+                intents=["music_hot_list"],
             ),
         ]
 
@@ -140,6 +154,30 @@ class MusicSkill(BaseSkill):
                 lines.append(f"   {url}")
 
         return "\n".join(lines)
+
+    def _parse_search_music_result(self, args: dict, result: str) -> dict | None:
+        songs = []
+        current = None
+        for line in result.splitlines():
+            title_match = re.match(r"^\d+\.\s+(.+?)\s+-\s+(.+)$", line.strip())
+            if title_match:
+                if current:
+                    songs.append(current)
+                current = {"name": title_match.group(1).strip(), "artist": title_match.group(2).strip()}
+                continue
+            if current and line.strip().startswith("专辑:"):
+                current["album"] = line.split(":", 1)[1].strip()
+        if current:
+            songs.append(current)
+        return {"keyword": str(args.get("keyword", "")).strip(), "songs": songs}
+
+    def _parse_hot_list_result(self, args: dict, result: str) -> dict | None:
+        songs = []
+        for line in result.splitlines():
+            match = re.match(r"^\d+\.\s+(.+?)\s+-\s+(.+)$", line.strip())
+            if match:
+                songs.append({"name": match.group(1).strip(), "artist": match.group(2).strip()})
+        return {"list_name": str(args.get("list_name", "热歌榜")).strip(), "songs": songs}
 
 
 register(MusicSkill)

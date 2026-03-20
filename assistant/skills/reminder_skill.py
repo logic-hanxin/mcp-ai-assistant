@@ -1,8 +1,9 @@
 """定时提醒 Skill - 设置提醒，到时间自动通知"""
 
 import datetime
+import re
 from assistant.skills.base import BaseSkill, ToolDefinition, register
-from assistant.agent import db
+from assistant.agent import db_misc as db
 
 
 class ReminderSkill(BaseSkill):
@@ -48,12 +49,36 @@ class ReminderSkill(BaseSkill):
                     "required": ["message", "time_str"],
                 },
                 handler=self._create_reminder,
+                metadata={
+                    "category": "write",
+                    "side_effect": "scheduled_notification",
+                    "blackboard_reads": ["target_user", "target_group"],
+                    "blackboard_writes": ["last_reminder"],
+                    "required_all": ["message", "time_str"],
+                    "required_any": [["notify_qq", "notify_group_id"]],
+                    "store_args": {
+                        "notify_qq": "last_target_qq",
+                        "notify_group_id": "last_target_group",
+                    },
+                    "store_result": ["last_reminder"],
+                },
+                result_parser=self._parse_create_reminder_result,
+                keywords=["提醒", "定时通知", "稍后提醒", "日程提醒"],
+                intents=["create_reminder", "schedule_notification"],
             ),
             ToolDefinition(
                 name="list_reminders",
                 description="列出所有待执行的提醒。",
                 parameters={"type": "object", "properties": {}},
                 handler=self._list_reminders,
+                metadata={
+                    "category": "read",
+                    "blackboard_writes": ["last_reminder"],
+                    "store_result": ["last_reminder"],
+                },
+                result_parser=self._parse_list_reminders_result,
+                keywords=["提醒列表", "查看提醒", "待办提醒"],
+                intents=["list_reminders"],
             ),
             ToolDefinition(
                 name="delete_reminder",
@@ -69,6 +94,14 @@ class ReminderSkill(BaseSkill):
                     "required": ["reminder_id"],
                 },
                 handler=self._delete_reminder,
+                metadata={
+                    "category": "write",
+                    "side_effect": "data_write",
+                    "required_all": ["reminder_id"],
+                },
+                result_parser=self._parse_delete_reminder_result,
+                keywords=["删除提醒", "取消提醒"],
+                intents=["delete_reminder"],
             ),
         ]
 
@@ -201,6 +234,47 @@ class ReminderSkill(BaseSkill):
         if not ok:
             return f"未找到 ID 为 {reminder_id} 的提醒。"
         return f"提醒 {reminder_id} 已删除。"
+
+    def _parse_create_reminder_result(self, args: dict, result: str) -> dict | None:
+        reminder_id = None
+        time_text = ""
+        id_match = re.search(r"ID:\s*(\d+)", result)
+        if id_match:
+            reminder_id = int(id_match.group(1))
+        time_match = re.search(r"时间:\s*([0-9\-:\s]+)", result)
+        if time_match:
+            time_text = time_match.group(1).strip()
+        return {
+            "action": "create_reminder",
+            "id": reminder_id,
+            "message": str(args.get("message", "")).strip(),
+            "time_str": str(args.get("time_str", "")).strip(),
+            "target_time": time_text,
+            "notify_qq": str(args.get("notify_qq", "")).strip(),
+            "notify_group_id": str(args.get("notify_group_id", "")).strip(),
+        }
+
+    def _parse_list_reminders_result(self, args: dict, result: str) -> dict | None:
+        reminders = []
+        for line in result.splitlines():
+            match = re.match(r"^\[(\d+)\]\s+(.+?)\s+时间:\s+([0-9\-: ]+)\s+\((.+)\)$", line.strip())
+            if match:
+                reminders.append(
+                    {
+                        "id": int(match.group(1)),
+                        "message": match.group(2).strip(),
+                        "time": match.group(3).strip(),
+                        "remaining": match.group(4).strip(),
+                    }
+                )
+        return {"action": "list_reminders", "reminders": reminders}
+
+    def _parse_delete_reminder_result(self, args: dict, result: str) -> dict | None:
+        return {
+            "action": "delete_reminder",
+            "id": args.get("reminder_id"),
+            "deleted": "已删除" in result,
+        }
 
 
 register(ReminderSkill)

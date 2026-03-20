@@ -30,6 +30,14 @@ class ContactsSkill(BaseSkill):
                     "required": ["qq_number", "name"],
                 },
                 handler=self._set_user,
+                metadata={
+                    "category": "write",
+                    "side_effect": "data_write",
+                    "blackboard_writes": ["contact"],
+                },
+                result_parser=self._parse_set_user_result,
+                keywords=["设置联系人", "保存QQ昵称", "绑定QQ和名字"],
+                intents=["set_user_name"],
             ),
             ToolDefinition(
                 name="get_user_name",
@@ -42,6 +50,13 @@ class ContactsSkill(BaseSkill):
                     "required": ["qq_number"],
                 },
                 handler=self._get_user,
+                metadata={
+                    "category": "read",
+                    "blackboard_writes": ["contact"],
+                },
+                result_parser=self._parse_get_user_result,
+                keywords=["查联系人", "查看QQ信息", "查询用户名称"],
+                intents=["get_user_name"],
             ),
             ToolDefinition(
                 name="set_group_name",
@@ -55,12 +70,25 @@ class ContactsSkill(BaseSkill):
                     "required": ["group_id", "name"],
                 },
                 handler=self._set_group,
+                metadata={
+                    "category": "write",
+                    "side_effect": "data_write",
+                },
+                keywords=["设置群名", "保存群名称", "绑定群号"],
+                intents=["set_group_name"],
             ),
             ToolDefinition(
                 name="list_contacts",
                 description="列出所有已保存的用户和群信息，包含交互统计。",
                 parameters={"type": "object", "properties": {}},
                 handler=self._list_contacts,
+                metadata={
+                    "category": "read",
+                    "blackboard_writes": ["contact"],
+                },
+                result_parser=self._parse_list_contacts_result,
+                keywords=["通讯录列表", "联系人列表", "查看联系人"],
+                intents=["list_contacts"],
             ),
             ToolDefinition(
                 name="find_qq_by_name",
@@ -73,6 +101,14 @@ class ContactsSkill(BaseSkill):
                     "required": ["name"],
                 },
                 handler=self._find_qq,
+                metadata={
+                    "category": "read",
+                    "blackboard_reads": ["contact"],
+                    "blackboard_writes": ["contact"],
+                },
+                result_parser=self._parse_find_qq_result,
+                keywords=["按名字找QQ", "查QQ号", "联系人匹配"],
+                intents=["find_qq_by_name"],
             ),
         ]
 
@@ -167,6 +203,42 @@ class ContactsSkill(BaseSkill):
             return f"未找到名称包含 '{name}' 的用户。"
         lines = [f"  QQ {qq} -> {n}" for qq, n in results]
         return "找到以下用户:\n" + "\n".join(lines)
+
+    def _parse_set_user_result(self, args: dict, result: str) -> dict | None:
+        qq = str(args.get("qq_number", "")).strip()
+        name = str(args.get("name", "")).strip()
+        if qq and name:
+            return {"contacts": [{"qq": qq, "name": name}]}
+        return None
+
+    def _parse_get_user_result(self, args: dict, result: str) -> dict | None:
+        qq = str(args.get("qq_number", "")).strip()
+        if not qq:
+            return None
+        for line in result.splitlines():
+            if "名称:" in line:
+                name = line.split("名称:", 1)[1].strip()
+                if name:
+                    return {"contacts": [{"qq": qq, "name": name}]}
+        return None
+
+    def _parse_find_qq_result(self, args: dict, result: str) -> dict | None:
+        return self._parse_contact_lines(result)
+
+    def _parse_list_contacts_result(self, args: dict, result: str) -> dict | None:
+        return self._parse_contact_lines(result)
+
+    def _parse_contact_lines(self, result: str) -> dict | None:
+        import re
+        contacts = []
+        for line in result.splitlines():
+            match = re.search(r"QQ\s*([0-9]{5,})\s*(?:->|\|)\s*([^\|\n]+)", line)
+            if match:
+                qq = match.group(1).strip()
+                name = match.group(2).strip()
+                if name and name != "未命名":
+                    contacts.append({"qq": qq, "name": name})
+        return {"contacts": contacts} if contacts else None
 
 
 register(ContactsSkill)

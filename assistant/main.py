@@ -39,6 +39,7 @@ async def run():
         base_url=config.base_url,
         model=config.model,
     )
+    background_tasks: list[asyncio.Task] = []
 
     server_script = str(Path(__file__).parent / "mcp" / "server.py")
 
@@ -46,10 +47,12 @@ async def run():
         await agent.connect(server_script)
 
         # 启动后台检查器
-        reminder_task = asyncio.create_task(reminder_loop())
-        github_task = asyncio.create_task(github_check_loop())
-        news_task = asyncio.create_task(news_check_loop())
-        workflow_task = asyncio.create_task(workflow_loop())
+        background_tasks = [
+            asyncio.create_task(reminder_loop()),
+            asyncio.create_task(github_check_loop()),
+            asyncio.create_task(news_check_loop()),
+            asyncio.create_task(workflow_loop()),
+        ]
 
         print(BANNER)
 
@@ -94,11 +97,11 @@ async def run():
                     facts = agent.memory.get_facts()
                     if facts:
                         for k, v in facts.items():
-                            print(f"  {k}: {v['value']}")
+                            print(f"  {k}: {v}")
                     else:
                         print("  暂无保存的个人信息。")
                 elif cmd == "/reminders":
-                    from assistant.agent import db as _db
+                    from assistant.agent import db_misc as _db
                     import datetime as _dt
                     try:
                         reminders = _db.reminder_get_all_pending()
@@ -131,10 +134,10 @@ async def run():
                 print(f"\n出错了: {e}")
 
     finally:
-        reminder_task.cancel()
-        github_task.cancel()
-        news_task.cancel()
-        workflow_task.cancel()
+        for task in background_tasks:
+            task.cancel()
+        if background_tasks:
+            await asyncio.gather(*background_tasks, return_exceptions=True)
         await agent.close()
 
 

@@ -12,7 +12,7 @@ import datetime
 
 import httpx
 
-from assistant.agent import db
+from assistant.agent import db_misc as db
 
 NAPCAT_API_URL = os.getenv("NAPCAT_API_URL", "http://127.0.0.1:3000")
 
@@ -22,8 +22,8 @@ async def reminder_loop():
     while True:
         try:
             await _check_and_notify()
-        except Exception:
-            pass  # 后台任务不应因异常崩溃
+        except Exception as e:
+            print(f"[提醒检查器] 检查异常: {e}")  # 后台任务不应因异常崩溃
         await asyncio.sleep(15)
 
 

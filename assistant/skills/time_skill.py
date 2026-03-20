@@ -24,6 +24,11 @@ class TimeSkill(BaseSkill):
                     },
                 },
                 handler=self._get_current_time,
+                metadata={
+                    "category": "read",
+                },
+                keywords=["时间", "现在几点", "当前日期", "当前时间"],
+                intents=["get_current_time"],
             ),
         ]
 

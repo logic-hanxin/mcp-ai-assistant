@@ -13,7 +13,7 @@ import datetime
 
 import httpx
 
-from assistant.agent import db
+from assistant.agent import db_misc as db
 
 NAPCAT_API_URL = os.getenv("NAPCAT_API_URL", "http://127.0.0.1:3000")
 CHECK_INTERVAL = 60  # 检查间隔(秒)

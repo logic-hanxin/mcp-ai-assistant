@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 
+from assistant.runtime_context import get_current_user_qq
 from assistant.skills.base import BaseSkill, ToolDefinition, register
 
 
@@ -39,6 +40,15 @@ class RuleSkill(BaseSkill):
                     "required": ["title", "content"],
                 },
                 handler=self._add_rule,
+                metadata={
+                    "category": "admin",
+                    "side_effect": "admin_operation",
+                    "blackboard_reads": ["target_user"],
+                    "required_all": ["title", "content"],
+                    "session_required": True,
+                },
+                keywords=["添加规则", "写入守则", "新增准则"],
+                intents=["add_rule"],
             ),
             ToolDefinition(
                 name="list_rules",
@@ -48,6 +58,11 @@ class RuleSkill(BaseSkill):
                     "properties": {},
                 },
                 handler=self._list_rules,
+                metadata={
+                    "category": "read",
+                },
+                keywords=["查看守则", "规则列表", "当前准则"],
+                intents=["list_rules"],
             ),
             ToolDefinition(
                 name="delete_rule",
@@ -63,6 +78,15 @@ class RuleSkill(BaseSkill):
                     "required": ["rule_id"],
                 },
                 handler=self._delete_rule,
+                metadata={
+                    "category": "admin",
+                    "side_effect": "admin_operation",
+                    "blackboard_reads": ["target_user"],
+                    "required_all": ["rule_id"],
+                    "session_required": True,
+                },
+                keywords=["删除规则", "移除守则"],
+                intents=["delete_rule"],
             ),
         ]
 
@@ -76,14 +100,13 @@ class RuleSkill(BaseSkill):
 
     def _add_rule(self, title: str, content: str, user_qq: str = "") -> str:
         """添加守则"""
-        # 从环境变量获取当前用户 QQ（由 core 注入）
-        current_user = os.getenv("CURRENT_USER_QQ", user_qq)
+        current_user = get_current_user_qq(user_qq)
 
         if not self._check_admin(current_user):
             return f"❌ 只有管理员才能添加守则。你的QQ号: {current_user}"
 
         try:
-            from assistant.agent.db import save_rule
+            from assistant.agent.db_misc import save_rule
             rule_id = save_rule(title, content)
             return f"守则已添加 (ID: {rule_id}):\n标题: {title}\n内容: {content}"
         except Exception as e:
@@ -92,7 +115,7 @@ class RuleSkill(BaseSkill):
     def _list_rules(self) -> str:
         """列出守则"""
         try:
-            from assistant.agent.db import load_rules
+            from assistant.agent.db_misc import load_rules
             rules = load_rules()
             if not rules:
                 return "当前没有任何守则。"
@@ -105,14 +128,13 @@ class RuleSkill(BaseSkill):
 
     def _delete_rule(self, rule_id: int, user_qq: str = "") -> str:
         """删除守则"""
-        # 从环境变量获取当前用户 QQ
-        current_user = os.getenv("CURRENT_USER_QQ", user_qq)
+        current_user = get_current_user_qq(user_qq)
 
         if not self._check_admin(current_user):
             return f"❌ 只有管理员才能删除守则。你的QQ号: {current_user}"
 
         try:
-            from assistant.agent.db import delete_rule
+            from assistant.agent.db_misc import delete_rule
             if delete_rule(rule_id):
                 return f"守则 ID:{rule_id} 已删除。"
             return f"未找到 ID:{rule_id} 的守则。"

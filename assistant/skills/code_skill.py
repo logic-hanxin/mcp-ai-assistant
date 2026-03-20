@@ -218,6 +218,13 @@ class CodeSkill(BaseSkill):
                     "required": ["code"],
                 },
                 handler=self._run_cpp_code,
+                metadata={
+                    "category": "write",
+                    "side_effect": "external_trigger",
+                    "required_all": ["code"],
+                },
+                keywords=["运行C++", "编译代码", "执行代码", "代码沙盒"],
+                intents=["run_cpp_code"],
             ),
             ToolDefinition(
                 name="get_leetcode_problem",
@@ -241,6 +248,11 @@ class CodeSkill(BaseSkill):
                     "required": [],
                 },
                 handler=self._get_leetcode_problem,
+                metadata={
+                    "category": "read",
+                },
+                keywords=["LeetCode", "每日一题", "随机算法题", "刷题"],
+                intents=["get_leetcode_problem"],
             ),
         ]
 

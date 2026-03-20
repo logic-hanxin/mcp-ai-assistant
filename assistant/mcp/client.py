@@ -3,9 +3,17 @@ MCP Client - 连接 MCP Server，提供工具调用能力
 """
 
 import sys
-import json
+from dataclasses import dataclass
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+
+from assistant.skills.base import decode_tool_result
+
+
+@dataclass
+class ToolCallResult:
+    text: str
+    structured: dict | None = None
 
 
 class MCPClient:
@@ -49,10 +57,16 @@ class MCPClient:
             for t in mcp_tools
         ]
 
-    async def call_tool(self, name: str, args: dict) -> str:
-        """通过 MCP 协议调用工具"""
+    async def call_tool_ex(self, name: str, args: dict) -> ToolCallResult:
+        """通过 MCP 协议调用工具，并解析结构化 side channel。"""
         result = await self.session.call_tool(name, args)
-        return result.content[0].text if result.content else ""
+        payload = result.content[0].text if result.content else ""
+        decoded = decode_tool_result(payload)
+        return ToolCallResult(text=decoded.text, structured=decoded.structured)
+
+    async def call_tool(self, name: str, args: dict) -> str:
+        """兼容旧接口，仅返回文本结果。"""
+        return (await self.call_tool_ex(name, args)).text
 
     @property
     def tool_names(self) -> list[str]:

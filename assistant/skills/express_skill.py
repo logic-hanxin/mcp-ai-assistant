@@ -1,5 +1,6 @@
 """快递查询 Skill - 基于快递100移动版接口"""
 
+import re
 import httpx
 from assistant.skills.base import BaseSkill, ToolDefinition, register
 
@@ -82,6 +83,13 @@ class ExpressSkill(BaseSkill):
                     "required": ["tracking_no"],
                 },
                 handler=self._query_express,
+                metadata={
+                    "category": "read",
+                    "required_all": ["tracking_no"],
+                },
+                result_parser=self._parse_express_result,
+                keywords=["快递查询", "物流信息", "查快递", "单号查询"],
+                intents=["query_express"],
             ),
         ]
 
@@ -144,6 +152,21 @@ class ExpressSkill(BaseSkill):
             lines.append(f"  ... 还有 {len(records) - 8} 条记录")
 
         return "\n".join(lines)
+
+    def _parse_express_result(self, args: dict, result: str) -> dict | None:
+        tracking_no = str(args.get("tracking_no", "")).strip()
+        company = ""
+        state = ""
+        records = []
+        head_match = re.match(r"^快递:\s+(.+?)\s+单号:\s+(.+?)\s+状态:\s+(.+)$", result.splitlines()[0].strip()) if result.strip() else None
+        if head_match:
+            company = head_match.group(1).strip()
+            state = head_match.group(3).strip()
+        for line in result.splitlines()[2:]:
+            match = re.match(r"^(.+?)\s{2,}(.+)$", line.strip())
+            if match:
+                records.append({"time": match.group(1).strip(), "context": match.group(2).strip()})
+        return {"tracking_no": tracking_no, "company": company, "state": state, "records": records}
 
 
 register(ExpressSkill)

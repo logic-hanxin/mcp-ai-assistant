@@ -12,7 +12,7 @@
 
 import datetime
 from assistant.skills.base import BaseSkill, ToolDefinition, register
-from assistant.agent import db
+from assistant.agent import db_knowledge as db
 from assistant.agent.rag import ingest_document, search_knowledge
 
 
@@ -49,6 +49,13 @@ class KnowledgeSkill(BaseSkill):
                     "required": ["title", "content"],
                 },
                 handler=self._add_knowledge,
+                metadata={
+                    "category": "write",
+                    "side_effect": "data_write",
+                    "required_all": ["title", "content"],
+                },
+                keywords=["加入知识库", "保存知识", "入库文档", "添加FAQ"],
+                intents=["add_knowledge"],
             ),
             ToolDefinition(
                 name="search_knowledge",
@@ -73,12 +80,27 @@ class KnowledgeSkill(BaseSkill):
                     "required": ["query"],
                 },
                 handler=self._search_knowledge,
+                metadata={
+                    "category": "read",
+                    "blackboard_writes": ["last_knowledge_query", "last_knowledge_result"],
+                    "required_all": ["query"],
+                    "store_args": {"query": "last_knowledge_query"},
+                    "store_result": ["last_knowledge_result"],
+                },
+                result_parser=self._parse_search_result,
+                keywords=["知识库搜索", "查制度", "查FAQ", "检索知识"],
+                intents=["search_knowledge"],
             ),
             ToolDefinition(
                 name="list_knowledge_docs",
                 description="列出知识库中的所有文档。",
                 parameters={"type": "object", "properties": {}},
                 handler=self._list_docs,
+                metadata={
+                    "category": "read",
+                },
+                keywords=["知识库列表", "查看知识文档", "文档清单"],
+                intents=["list_knowledge_docs"],
             ),
             ToolDefinition(
                 name="delete_knowledge_doc",
@@ -94,6 +116,13 @@ class KnowledgeSkill(BaseSkill):
                     "required": ["doc_id"],
                 },
                 handler=self._delete_doc,
+                metadata={
+                    "category": "write",
+                    "side_effect": "data_write",
+                    "required_all": ["doc_id"],
+                },
+                keywords=["删除知识文档", "移除知识库内容"],
+                intents=["delete_knowledge_doc"],
             ),
         ]
 
@@ -188,6 +217,12 @@ class KnowledgeSkill(BaseSkill):
         if not ok:
             return f"未找到 ID 为 {doc_id} 的文档。"
         return f"文档 {doc_id} 及其所有分块已删除。"
+
+    def _parse_search_result(self, args: dict, result: str) -> dict | None:
+        query = str(args.get("query", "")).strip()
+        if not query:
+            return None
+        return {"query": query, "result": result[:500]}
 
 
 register(KnowledgeSkill)

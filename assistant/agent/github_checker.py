@@ -9,7 +9,7 @@ import asyncio
 
 import httpx
 
-from assistant.agent import db
+from assistant.agent import db_misc as db
 
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 NAPCAT_API_URL = os.getenv("NAPCAT_API_URL", "http://127.0.0.1:3000")
@@ -31,8 +31,8 @@ async def github_check_loop():
     while True:
         try:
             await _check_all_repos()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[GitHub检查器] 检查异常: {e}")
         await asyncio.sleep(CHECK_INTERVAL)
 
 

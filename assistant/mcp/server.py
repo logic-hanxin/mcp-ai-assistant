@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from mcp.server.fastmcp import FastMCP
-from assistant.skills.base import discover_and_load_skills
+from assistant.skills.base import discover_and_load_skills, encode_tool_result
 
 mcp = FastMCP("PrivateAssistant")
 
@@ -52,7 +52,18 @@ def _register_tool(tool_def):
     # 如果 wrapper 签名是 **kwargs，FastMCP 会生成错误的 schema
     def make_wrapper(h):
         def wrapper(**kwargs):
-            return h(**kwargs)
+            result = h(**kwargs)
+            if not isinstance(result, str):
+                return result
+
+            parser = getattr(tool_def, "result_parser", None)
+            if not parser:
+                return result
+            try:
+                structured = parser(kwargs, result)
+            except Exception:
+                structured = None
+            return encode_tool_result(result, structured if isinstance(structured, dict) else None)
         # 关键：复制原始 handler 的签名，让 FastMCP 看到正确的参数定义
         wrapper.__signature__ = inspect.signature(h)
         wrapper.__name__ = tool_def.name

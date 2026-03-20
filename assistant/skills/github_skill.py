@@ -3,7 +3,7 @@
 import os
 import httpx
 from assistant.skills.base import BaseSkill, ToolDefinition, register
-from assistant.agent import db
+from assistant.agent import db_misc as db
 
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 
@@ -37,6 +37,22 @@ class GitHubSkill(BaseSkill):
                     "required": ["repo", "notify_qq"],
                 },
                 handler=self._watch_repo,
+                metadata={
+                    "category": "write",
+                    "side_effect": "scheduled_notification",
+                    "blackboard_reads": ["github_repo", "target_user"],
+                    "blackboard_writes": ["last_github_repo", "last_github_branch"],
+                    "required_all": ["repo"],
+                    "required_any": [["notify_qq"]],
+                    "store_args": {
+                        "repo": "last_github_repo",
+                        "branch": "last_github_branch",
+                        "notify_qq": "last_target_qq",
+                    },
+                },
+                result_parser=self._parse_repo_branch_result,
+                keywords=["GitHub监控", "仓库订阅", "新提交提醒", "repo watch"],
+                intents=["watch_repository", "subscribe_repo"],
             ),
             ToolDefinition(
                 name="github_unwatch_repo",
@@ -49,12 +65,16 @@ class GitHubSkill(BaseSkill):
                     "required": ["repo"],
                 },
                 handler=self._unwatch_repo,
+                keywords=["取消监控", "停止订阅仓库", "移除GitHub监控"],
+                intents=["unwatch_repository"],
             ),
             ToolDefinition(
                 name="github_list_watched",
                 description="列出当前所有监控中的 GitHub 仓库。",
                 parameters={"type": "object", "properties": {}},
                 handler=self._list_watched,
+                keywords=["监控列表", "查看订阅仓库", "GitHub监控列表"],
+                intents=["list_watched_repositories"],
             ),
             ToolDefinition(
                 name="github_get_latest_commits",
@@ -69,6 +89,16 @@ class GitHubSkill(BaseSkill):
                     "required": ["repo"],
                 },
                 handler=self._get_commits,
+                metadata={
+                    "category": "read",
+                    "blackboard_reads": ["github_repo", "github_branch"],
+                    "blackboard_writes": ["last_github_repo", "last_github_branch"],
+                    "required_all": ["repo"],
+                    "store_args": {"repo": "last_github_repo", "branch": "last_github_branch"},
+                },
+                result_parser=self._parse_repo_branch_result,
+                keywords=["最近提交", "commit记录", "仓库提交历史", "分支提交"],
+                intents=["get_recent_commits", "inspect_repository"],
             ),
             ToolDefinition(
                 name="github_get_branches",
@@ -81,6 +111,86 @@ class GitHubSkill(BaseSkill):
                     "required": ["repo"],
                 },
                 handler=self._get_branches,
+                metadata={
+                    "category": "read",
+                    "blackboard_reads": ["github_repo"],
+                    "blackboard_writes": ["last_github_repo"],
+                    "required_all": ["repo"],
+                    "store_args": {"repo": "last_github_repo"},
+                },
+                result_parser=self._parse_repo_branch_result,
+                keywords=["分支列表", "查看仓库分支", "branch信息"],
+                intents=["list_branches", "inspect_repository"],
+            ),
+            ToolDefinition(
+                name="github_get_repo_overview",
+                description="查看仓库概要信息，包括描述、星标、Fork、默认分支、Open Issue 等。",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "repo": {"type": "string", "description": "仓库全名，如 'owner/repo'"},
+                    },
+                    "required": ["repo"],
+                },
+                handler=self._get_repo_overview,
+                metadata={
+                    "category": "read",
+                    "blackboard_reads": ["github_repo"],
+                    "blackboard_writes": ["last_github_repo"],
+                    "required_all": ["repo"],
+                    "store_args": {"repo": "last_github_repo"},
+                },
+                result_parser=self._parse_repo_branch_result,
+                keywords=["仓库概览", "repo信息", "仓库摘要"],
+                intents=["get_repo_overview"],
+            ),
+            ToolDefinition(
+                name="github_list_pull_requests",
+                description="列出指定仓库的 Pull Request。",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "repo": {"type": "string", "description": "仓库全名，如 'owner/repo'"},
+                        "state": {"type": "string", "description": "PR 状态: open/closed/all", "default": "open"},
+                        "limit": {"type": "integer", "description": "返回条数，默认5", "default": 5},
+                    },
+                    "required": ["repo"],
+                },
+                handler=self._list_pull_requests,
+                metadata={
+                    "category": "read",
+                    "blackboard_reads": ["github_repo"],
+                    "blackboard_writes": ["last_github_repo"],
+                    "required_all": ["repo"],
+                    "store_args": {"repo": "last_github_repo"},
+                },
+                result_parser=self._parse_repo_branch_result,
+                keywords=["查看PR", "Pull Request列表", "合并请求"],
+                intents=["list_pull_requests"],
+            ),
+            ToolDefinition(
+                name="github_list_issues",
+                description="列出指定仓库的 Issue。",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "repo": {"type": "string", "description": "仓库全名，如 'owner/repo'"},
+                        "state": {"type": "string", "description": "Issue 状态: open/closed/all", "default": "open"},
+                        "limit": {"type": "integer", "description": "返回条数，默认5", "default": 5},
+                    },
+                    "required": ["repo"],
+                },
+                handler=self._list_issues,
+                metadata={
+                    "category": "read",
+                    "blackboard_reads": ["github_repo"],
+                    "blackboard_writes": ["last_github_repo"],
+                    "required_all": ["repo"],
+                    "store_args": {"repo": "last_github_repo"},
+                },
+                result_parser=self._parse_repo_branch_result,
+                keywords=["查看Issue", "问题列表", "仓库问题"],
+                intents=["list_issues"],
             ),
         ]
 
@@ -157,6 +267,77 @@ class GitHubSkill(BaseSkill):
             return "\n".join(lines)
         except Exception as e:
             return f"查询失败: {e}"
+
+    def _get_repo_overview(self, repo: str) -> str:
+        try:
+            resp = httpx.get(
+                f"https://api.github.com/repos/{repo}",
+                headers=_headers(),
+                timeout=15,
+            )
+            if resp.status_code == 404:
+                return f"仓库 {repo} 不存在或无权访问。"
+            if resp.status_code != 200:
+                return f"查询失败: HTTP {resp.status_code}"
+            data = resp.json()
+            lines = [
+                f"{repo} 仓库概览",
+                f"描述: {data.get('description') or '无'}",
+                f"默认分支: {data.get('default_branch', 'main')}",
+                f"⭐ Stars: {data.get('stargazers_count', 0)} | Forks: {data.get('forks_count', 0)}",
+                f"Open Issues: {data.get('open_issues_count', 0)}",
+                f"主页: {data.get('html_url', '')}",
+            ]
+            return "\n".join(lines)
+        except Exception as e:
+            return f"查询失败: {e}"
+
+    def _list_pull_requests(self, repo: str, state: str = "open", limit: int = 5) -> str:
+        try:
+            resp = httpx.get(
+                f"https://api.github.com/repos/{repo}/pulls",
+                params={"state": state, "per_page": limit},
+                headers=_headers(),
+                timeout=15,
+            )
+            if resp.status_code != 200:
+                return f"查询失败: HTTP {resp.status_code}"
+            pulls = resp.json()
+            if not pulls:
+                return f"{repo} 当前没有 {state} 状态的 PR。"
+            lines = [f"{repo} 的 PR 列表 ({state}):"]
+            for pr in pulls[:limit]:
+                lines.append(f"  #{pr['number']} {pr['title']} [{pr['user']['login']}]")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"查询失败: {e}"
+
+    def _list_issues(self, repo: str, state: str = "open", limit: int = 5) -> str:
+        try:
+            resp = httpx.get(
+                f"https://api.github.com/repos/{repo}/issues",
+                params={"state": state, "per_page": limit},
+                headers=_headers(),
+                timeout=15,
+            )
+            if resp.status_code != 200:
+                return f"查询失败: HTTP {resp.status_code}"
+            issues = [item for item in resp.json() if "pull_request" not in item]
+            if not issues:
+                return f"{repo} 当前没有 {state} 状态的 Issue。"
+            lines = [f"{repo} 的 Issue 列表 ({state}):"]
+            for issue in issues[:limit]:
+                lines.append(f"  #{issue['number']} {issue['title']} [{issue['user']['login']}]")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"查询失败: {e}"
+
+    def _parse_repo_branch_result(self, args: dict, result: str) -> dict | None:
+        repo = str(args.get("repo", "")).strip()
+        branch = str(args.get("branch", "")).strip()
+        if repo:
+            return {"repo": repo, "branch": branch or "main"}
+        return None
 
 
 register(GitHubSkill)

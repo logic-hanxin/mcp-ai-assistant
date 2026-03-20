@@ -23,6 +23,12 @@ class CalcSkill(BaseSkill):
                     "required": ["expression"],
                 },
                 handler=self._calculate,
+                metadata={
+                    "category": "read",
+                    "required_all": ["expression"],
+                },
+                keywords=["计算", "数学", "表达式求值", "算一下"],
+                intents=["calculate_expression"],
             ),
         ]
 

@@ -25,6 +25,7 @@ import httpx
 from openai import OpenAI
 from fastapi import Request
 
+from assistant.runtime_context import reset_current_user_qq, set_current_user_qq
 from assistant.web.api import app, get_agent
 from assistant.agent.contacts_db import (
     record_user_interaction, record_group_interaction, get_user_display_name,
@@ -533,11 +534,11 @@ async def _handle_message(session_id: str, text: str, user_qq: str = "", group_i
             file_info = "\n".join([f"[文件: {f.get('name', 'unknown')}]" for f in files])
             message_content = f"{message_content}\n{file_info}"
 
-        # 设置当前用户 QQ（供 Skill 权限检查使用）
-        import os
-        os.environ["CURRENT_USER_QQ"] = user_qq
-
-        reply = await agent.chat(message_content)
+        token = set_current_user_qq(user_qq)
+        try:
+            reply = await agent.chat(message_content)
+        finally:
+            reset_current_user_qq(token)
         return reply
     except Exception as e:
         return f"出错了: {e}"

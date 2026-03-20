@@ -16,7 +16,7 @@ import datetime
 import httpx
 from openai import OpenAI
 
-from assistant.agent import db
+from assistant.agent import db_misc as db
 
 NAPCAT_API_URL = os.getenv("NAPCAT_API_URL", "http://127.0.0.1:3000")
 NEWS_NOTIFY_QQ = os.getenv("NEWS_NOTIFY_QQ", "")
@@ -42,8 +42,8 @@ async def news_check_loop():
     while True:
         try:
             await _check_and_send()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[每日新闻] 检查异常: {e}")
         await asyncio.sleep(60)
 
 

@@ -118,7 +118,7 @@ class KnowledgeToolAdapter(ToolAdapter):
 
 
 class SearchToolAdapter(ToolAdapter):
-    tool_names = ("web_search",)
+    tool_names = ("web_search", "search_and_read")
 
     def apply(self, core, event: ToolEvent):
         parsed = _parse_structured_result(core, event)

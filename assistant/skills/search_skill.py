@@ -1,7 +1,8 @@
-"""搜索 Skill - 多源网页搜索"""
+"""搜索 Skill - 多源网页搜索与正文抓取"""
 
 import html
 import re
+from urllib.parse import urlparse
 from assistant.skills.base import BaseSkill, ToolDefinition, register
 
 
@@ -16,6 +17,65 @@ def _normalize_url(url: str) -> str:
     if url.startswith("//"):
         url = "https:" + url
     return url
+
+
+def _detect_query_topics(query: str) -> set[str]:
+    query = (query or "").lower()
+    topics = set()
+    movie_keywords = ("电影", "演员", "剧情", "导演", "票房", "豆瓣", "色戒", "上映", "影视")
+    if any(keyword in query for keyword in movie_keywords):
+        topics.add("movie")
+    person_keywords = ("是谁", "人物", "介绍", "简历", "资料", "信息", "汤唯", "明星")
+    if any(keyword in query for keyword in person_keywords):
+        topics.add("person")
+    tech_keywords = ("api", "github", "python", "mcp", "文档", "sdk", "代码", "技术")
+    if any(keyword in query for keyword in tech_keywords):
+        topics.add("tech")
+    return topics
+
+
+def _score_result(query: str, item: dict) -> tuple[int, int, int]:
+    url = (item.get("url") or "").lower()
+    title = (item.get("title") or "").lower()
+    snippet = (item.get("snippet") or "").lower()
+    text = f"{title} {snippet}"
+    topics = _detect_query_topics(query)
+
+    domain_score = 0
+    if "movie" in topics:
+        if "douban.com" in url:
+            domain_score += 50
+        if "imdb.com" in url:
+            domain_score += 40
+        if "wikipedia.org" in url:
+            domain_score += 30
+        if "baike.baidu.com" in url:
+            domain_score += 20
+    if "person" in topics:
+        if "baike.baidu.com" in url or "wikipedia.org" in url:
+            domain_score += 35
+        if "douban.com" in url:
+            domain_score += 20
+    if "tech" in topics:
+        if "github.com" in url:
+            domain_score += 45
+        if "docs." in url or "developer." in url:
+            domain_score += 35
+
+    quality_score = 0
+    if item.get("url"):
+        quality_score += 10
+    if len(title) >= 6:
+        quality_score += 5
+    if len(snippet) >= 20:
+        quality_score += 5
+
+    keyword_hits = 0
+    for token in re.findall(r"[\w\u4e00-\u9fa5]+", query.lower()):
+        if token and token in text:
+            keyword_hits += 1
+
+    return (domain_score, quality_score, keyword_hits)
 
 
 def _search_sogou(query: str, max_results: int = 5) -> list[dict]:
@@ -157,9 +217,51 @@ def _merge_results(query: str, max_results: int = 5) -> list[dict]:
                 continue
             seen.add(key)
             merged.append(item)
-            if len(merged) >= max_results:
-                return merged
+    merged = sorted(merged, key=lambda item: _score_result(query, item), reverse=True)
     return merged[:max_results]
+
+
+def _fetch_page_excerpt(url: str, max_text_length: int = 3000) -> str:
+    try:
+        import requests
+        from bs4 import BeautifulSoup
+
+        resp = requests.get(
+            url,
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        resp.encoding = resp.apparent_encoding or "utf-8"
+        soup = BeautifulSoup(resp.text, "html.parser")
+        for tag in soup(["script", "style", "nav", "footer", "header"]):
+            tag.decompose()
+        title = soup.title.string.strip() if soup.title and soup.title.string else url
+        text = soup.get_text(separator="\n")
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        cleaned = "\n".join(lines)
+        if len(cleaned) > max_text_length:
+            cleaned = cleaned[:max_text_length] + f"\n... (还有 {len(cleaned) - max_text_length} 字符)"
+        return f"【页面标题】{title}\n【URL】{url}\n\n【页面内容】\n{cleaned}"
+    except Exception as e:
+        return f"爬取失败: {e}"
+
+
+def _is_valid_page_excerpt(content: str) -> bool:
+    if not content:
+        return False
+    failure_markers = (
+        "爬取失败:",
+        "您所访问的页面不存在",
+        "read timed out",
+        "404",
+        "403",
+        "502",
+        "503",
+    )
+    if any(marker in content for marker in failure_markers):
+        return False
+    return len(content) >= 180
 
 
 class SearchSkill(BaseSkill):
@@ -200,6 +302,39 @@ class SearchSkill(BaseSkill):
                 keywords=["搜索", "查资料", "查网页", "实时信息", "上网查"],
                 intents=["web_search", "find_information"],
             ),
+            ToolDefinition(
+                name="search_and_read",
+                description="先搜索，再自动挑选更可靠的结果抓取正文。适合人物、电影、事件、技术资料等需要进一步阅读的查询。",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "搜索关键词",
+                        },
+                        "max_results": {
+                            "type": "integer",
+                            "description": "最多返回的候选结果数，默认5",
+                            "default": 5,
+                        },
+                        "max_text_length": {
+                            "type": "integer",
+                            "description": "抓取正文的最大长度，默认3000",
+                            "default": 3000,
+                        },
+                    },
+                    "required": ["query"],
+                },
+                handler=self._search_and_read,
+                metadata={
+                    "category": "read",
+                    "required_all": ["query"],
+                    "store_result": ["last_search_result"],
+                },
+                result_parser=self._parse_search_and_read_result,
+                keywords=["搜索并阅读", "自动找网页正文", "查一下并展开看看"],
+                intents=["search_and_read", "search_then_browse"],
+            ),
         ]
 
     def _search(self, query: str, max_results: int = 5) -> str:
@@ -222,6 +357,46 @@ class SearchSkill(BaseSkill):
                 lines.append(f"   来源: {r['source']}")
             lines.append("")
 
+        return "\n".join(lines)
+
+    def _search_and_read(self, query: str, max_results: int = 5, max_text_length: int = 3000) -> str:
+        if not query.strip():
+            return "请提供搜索关键词。"
+
+        results = _merge_results(query, max_results)
+        if not results:
+            return f"没有找到与 '{query}' 相关的结果。"
+
+        attempts = []
+        best_content = ""
+        best_url = ""
+
+        for item in results[: min(len(results), 3)]:
+            url = str(item.get("url", "")).strip()
+            if not url:
+                continue
+            content = _fetch_page_excerpt(url, max_text_length=max_text_length)
+            attempts.append({"title": item.get("title", ""), "url": url, "content": content})
+            if _is_valid_page_excerpt(content):
+                best_content = content
+                best_url = url
+                break
+
+        lines = [f"搜索并阅读: {query}"]
+        if best_url:
+            lines.append(f"已选结果: {best_url}")
+            lines.append("")
+            lines.append(best_content)
+        else:
+            lines.append("没有成功抓到可靠正文，先给你候选结果：")
+            lines.append("")
+            for idx, item in enumerate(results, 1):
+                lines.append(f"{idx}. {item['title']}")
+                if item.get("snippet"):
+                    lines.append(f"   {item['snippet']}")
+                if item.get("url"):
+                    lines.append(f"   链接: {item['url']}")
+                lines.append("")
         return "\n".join(lines)
 
     def _parse_search_result(self, args: dict, result: str) -> dict | None:
@@ -253,6 +428,18 @@ class SearchSkill(BaseSkill):
             "query": query,
             "results": results,
             "result": result[:500],
+        }
+
+    def _parse_search_and_read_result(self, args: dict, result: str) -> dict | None:
+        query = str(args.get("query", "")).strip()
+        selected_url = ""
+        match = re.search(r"已选结果:\s*(https?://\S+)", result)
+        if match:
+            selected_url = match.group(1).strip()
+        return {
+            "query": query,
+            "selected_url": selected_url,
+            "result": result[:1000],
         }
 
 

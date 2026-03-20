@@ -22,9 +22,10 @@ from __future__ import annotations
 import os
 import json
 import httpx
-from openai import OpenAI
 from fastapi import Request
 
+from assistant.config import load_config
+from assistant.llm.model_pool import build_llm_client
 from assistant.runtime_context import reset_current_user_qq, set_current_user_qq
 from assistant.web.api import app, get_agent
 from assistant.agent.contacts_db import (
@@ -105,6 +106,22 @@ async def _fetch_group_name(group_id: int) -> str:
                 return data.get("data", {}).get("group_name", "")
     except Exception:
         pass
+    return ""
+
+
+async def _resolve_image_url(image: dict) -> str:
+    """尽量把 OneBot 图片段解析成可访问 URL。"""
+    url = str(image.get("url", "")).strip()
+    if url:
+        return url
+
+    file_id = str(image.get("file", "")).strip()
+    if file_id.startswith("http://") or file_id.startswith("https://"):
+        return file_id
+
+    if file_id:
+        return (await _get_file_url(file_id)) or ""
+
     return ""
 
 
@@ -236,16 +253,15 @@ def _is_at_me(message, self_id: int) -> bool:
 # ============================================================
 
 # 决策用的轻量 LLM 客户端 (延迟初始化)
-_decision_client: OpenAI | None = None
+_decision_client = None
 
 
-def _get_decision_client() -> OpenAI:
+def _get_decision_client():
     """获取决策用的 LLM 客户端"""
     global _decision_client
     if _decision_client is None:
-        from assistant.config import load_config
         cfg = load_config()
-        _decision_client = OpenAI(api_key=cfg.api_key, base_url=cfg.base_url)
+        _decision_client = build_llm_client(cfg)
     return _decision_client
 
 
@@ -289,7 +305,6 @@ async def _should_reply_in_group(text: str, sender_name: str, recent_context: st
     try:
         client = _get_decision_client()
         response = client.chat.completions.create(
-            model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
             messages=[{"role": "user", "content": prompt}],
             max_tokens=5,
             temperature=0.3,
@@ -353,12 +368,31 @@ async def onebot_event(request: Request):
                 if url:
                     f["url"] = url
 
+    if has_image:
+        normalized_images = []
+        seen_images: set[str] = set()
+        for image in images:
+            normalized = dict(image)
+            if not normalized.get("url"):
+                normalized["url"] = await _resolve_image_url(normalized)
+            identity = normalized.get("url") or normalized.get("file") or json.dumps(normalized, sort_keys=True, ensure_ascii=False)
+            if identity in seen_images:
+                continue
+            seen_images.add(identity)
+            normalized_images.append(normalized)
+        images = normalized_images
+        has_image = len(images) > 0
+
     # 构建消息描述
     message_parts = []
     if text:
         message_parts.append(text)
     if has_image:
-        message_parts.append(f"[收到 {len(images)} 张图片]")
+        accessible_count = sum(1 for img in images if img.get("url"))
+        if accessible_count:
+            message_parts.append(f"[收到 {len(images)} 张图片，可访问 {accessible_count} 张]")
+        else:
+            message_parts.append(f"[收到 {len(images)} 张图片，但暂时无法获取下载地址]")
     if has_file:
         # 显示文件名和 URL（如果有）
         file_info = []
@@ -428,6 +462,7 @@ async def onebot_event(request: Request):
             "user_qq": str(user_id),
             "group_id": str(group_id),
             "user_display_name": display_name,
+            "latest_image_url": next((img.get("url", "") for img in images if img.get("url")), ""),
         }
 
         # 智能决策: 判断是否需要回复
@@ -523,12 +558,16 @@ async def _handle_message(session_id: str, text: str, user_qq: str = "", group_i
             "user_qq": user_qq,
             "group_id": group_id,
             "user_display_name": display_name,
+            "latest_image_url": next((img.get("url", "") for img in images if img.get("url")), ""),
         }
 
         # 构建包含附件信息的消息
         message_content = text
         if images:
-            image_info = "\n".join([f"[图片: {img.get('url', img.get('file', ''))}]" for img in images])
+            image_info = "\n".join([
+                f"[图片: {img.get('url') or img.get('file', '未解析图片地址')}]"
+                for img in images
+            ])
             message_content = f"{text}\n{image_info}"
         if files:
             file_info = "\n".join([f"[文件: {f.get('name', 'unknown')}]" for f in files])

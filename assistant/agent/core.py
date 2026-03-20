@@ -21,7 +21,6 @@ Agent Core - 多 Agent 路由架构
 """
 
 import json
-from openai import OpenAI
 from assistant.mcp.client import MCPClient
 from assistant.agent.memory import Memory
 from assistant.agent.planner import Planner
@@ -32,6 +31,8 @@ from assistant.agent.tool_hydrators import ToolHydrationContext, build_default_t
 from assistant.agent.tool_adapters import ToolEvent, build_default_tool_adapters, dispatch_tool_adapters
 from assistant.agent.tool_policies import apply_tool_policies, build_default_tool_policies
 from assistant.skills.base import discover_tool_definitions, discover_tool_metadata
+from assistant.llm.deepseek import LLMEndpointConfig
+from assistant.llm.model_pool import OpenAIModelPool
 
 
 SYSTEM_PROMPT = """你是「小彩云」，彩云协会的智能助手，也是群里的一员。
@@ -91,8 +92,18 @@ class AgentCore:
     """多 Agent 路由架构核心"""
 
     def __init__(self, api_key: str, base_url: str, model: str,
-                 session_id: str = "default", user_id: str = None):
-        self.llm_client = OpenAI(api_key=api_key, base_url=base_url)
+                 session_id: str = "default", user_id: str = None,
+                 model_pool: list[LLMEndpointConfig] | None = None,
+                 llm_client: OpenAIModelPool | None = None,
+                 llm_request_timeout: float = 60.0,
+                 llm_max_retries_per_endpoint: int = 1):
+        self.llm_client = llm_client or OpenAIModelPool(
+            model_pool or [
+                LLMEndpointConfig(name="primary", api_key=api_key, base_url=base_url, model=model)
+            ],
+            request_timeout=llm_request_timeout,
+            max_retries_per_endpoint=llm_max_retries_per_endpoint,
+        )
         self.model = model
         self.mcp = MCPClient()
         self.memory = Memory(session_id=session_id, user_id=user_id or session_id)
@@ -161,6 +172,9 @@ class AgentCore:
     async def chat(self, user_input: str) -> str:
         """处理用户输入的完整流程"""
         self.memory.add_message("user", user_input)
+        latest_image_url = str(self.session_context.get("latest_image_url", "")).strip()
+        if latest_image_url:
+            self.blackboard.set(self._bb_scoped_key("last_image_url"), latest_image_url[:500])
 
         # 1. Router: 意图分类
         recent_ctx = self._get_recent_context()
@@ -492,12 +506,14 @@ class AgentCore:
         """在不覆盖已有参数的前提下，用会话上下文和黑板补全高频缺失参数。"""
         session_user = str(self.session_context.get("user_qq", "")).strip()
         session_group = str(self.session_context.get("group_id", "")).strip()
+        session_image = str(self.session_context.get("latest_image_url", "")).strip()
 
         bb_user = str(self.blackboard.get(self._bb_scoped_key("last_target_qq"), "")).strip()
         bb_group = str(self.blackboard.get(self._bb_scoped_key("last_target_group"), "")).strip()
         bb_repo = str(self.blackboard.get(self._bb_scoped_key("last_github_repo"), "")).strip()
         bb_branch = str(self.blackboard.get(self._bb_scoped_key("last_github_branch"), "")).strip()
         bb_city = str(self.blackboard.get(self._bb_scoped_key("last_city"), "")).strip()
+        bb_image = str(self.blackboard.get(self._bb_scoped_key("last_image_url"), "")).strip()
         if not bb_user:
             bb_user = self._latest_contact_qq()
         shareable_text = self._latest_shareable_result()
@@ -508,11 +524,13 @@ class AgentCore:
                 tool_args=dict(tool_args),
                 session_user=session_user,
                 session_group=session_group,
+                session_image=session_image,
                 bb_user=bb_user,
                 bb_group=bb_group,
                 bb_repo=bb_repo,
                 bb_branch=bb_branch,
                 bb_city=bb_city,
+                bb_image=bb_image,
                 shareable_text=shareable_text,
             ),
             hydrators,
@@ -578,6 +596,8 @@ class AgentCore:
             ctx_parts.append(f"当前对话用户的名称: {self.session_context['user_display_name']}")
         if self.session_context.get("group_id"):
             ctx_parts.append(f"当前对话所在群号: {self.session_context['group_id']}")
+        if self.session_context.get("latest_image_url"):
+            ctx_parts.append(f"当前消息附带图片链接: {self.session_context['latest_image_url']}")
         session_ctx = "\n".join(ctx_parts) if ctx_parts else ""
 
         # 加载守则

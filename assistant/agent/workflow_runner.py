@@ -148,11 +148,13 @@ class WorkflowRuntime:
     def hydrate_args(self, tool_name: str, tool_args: dict) -> dict:
         session_user = str(self.session_context.get("user_qq", "")).strip()
         session_group = str(self.session_context.get("group_id", "")).strip()
+        session_image = str(self.session_context.get("latest_image_url", "")).strip()
         bb_user = str(self.blackboard.get(self.scoped_key("last_target_qq"), "")).strip() or self.latest_contact_qq()
         bb_group = str(self.blackboard.get(self.scoped_key("last_target_group"), "")).strip()
         bb_repo = str(self.blackboard.get(self.scoped_key("last_github_repo"), "")).strip()
         bb_branch = str(self.blackboard.get(self.scoped_key("last_github_branch"), "")).strip()
         bb_city = str(self.blackboard.get(self.scoped_key("last_city"), "")).strip()
+        bb_image = str(self.blackboard.get(self.scoped_key("last_image_url"), "")).strip()
         shareable_text = self.latest_shareable_result()
         return hydrate_tool_args(
             ToolHydrationContext(
@@ -160,11 +162,13 @@ class WorkflowRuntime:
                 tool_args=dict(tool_args),
                 session_user=session_user,
                 session_group=session_group,
+                session_image=session_image,
                 bb_user=bb_user,
                 bb_group=bb_group,
                 bb_repo=bb_repo,
                 bb_branch=bb_branch,
                 bb_city=bb_city,
+                bb_image=bb_image,
                 shareable_text=shareable_text,
             ),
             self.tool_hydrators,

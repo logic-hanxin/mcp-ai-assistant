@@ -18,11 +18,13 @@ class ToolHydratorTests(unittest.TestCase):
                 tool_args={"content": "你好"},
                 session_user="",
                 session_group="",
+                session_image="",
                 bb_user="123456",
                 bb_group="",
                 bb_repo="",
                 bb_branch="",
                 bb_city="",
+                bb_image="",
                 shareable_text="",
             ),
             self.hydrators,
@@ -36,11 +38,13 @@ class ToolHydratorTests(unittest.TestCase):
                 tool_args={},
                 session_user="",
                 session_group="",
+                session_image="",
                 bb_user="",
                 bb_group="",
                 bb_repo="owner/repo",
                 bb_branch="dev",
                 bb_city="",
+                bb_image="",
                 shareable_text="",
             ),
             self.hydrators,
@@ -55,11 +59,13 @@ class ToolHydratorTests(unittest.TestCase):
                 tool_args={},
                 session_user="90001",
                 session_group="80001",
+                session_image="",
                 bb_user="",
                 bb_group="",
                 bb_repo="",
                 bb_branch="",
                 bb_city="",
+                bb_image="",
                 shareable_text="最近结果",
             ),
             self.hydrators,
@@ -67,6 +73,46 @@ class ToolHydratorTests(unittest.TestCase):
         self.assertEqual(args["content"], "最近结果")
         self.assertEqual(args["group_id"], "80001")
         self.assertEqual(args["at_qq"], "90001")
+
+    def test_vision_hydrator_uses_session_image_first(self):
+        args = hydrate_tool_args(
+            ToolHydrationContext(
+                tool_name="ocr_image",
+                tool_args={},
+                session_user="",
+                session_group="",
+                session_image="https://img.example.com/current.jpg",
+                bb_user="",
+                bb_group="",
+                bb_repo="",
+                bb_branch="",
+                bb_city="",
+                bb_image="https://img.example.com/old.jpg",
+                shareable_text="",
+            ),
+            self.hydrators,
+        )
+        self.assertEqual(args["image_url"], "https://img.example.com/current.jpg")
+
+    def test_vision_hydrator_falls_back_to_blackboard_image(self):
+        args = hydrate_tool_args(
+            ToolHydrationContext(
+                tool_name="understand_image",
+                tool_args={},
+                session_user="",
+                session_group="",
+                session_image="",
+                bb_user="",
+                bb_group="",
+                bb_repo="",
+                bb_branch="",
+                bb_city="",
+                bb_image="https://img.example.com/last.jpg",
+                shareable_text="",
+            ),
+            self.hydrators,
+        )
+        self.assertEqual(args["image_url"], "https://img.example.com/last.jpg")
 
 
 if __name__ == "__main__":

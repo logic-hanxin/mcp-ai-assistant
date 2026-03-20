@@ -14,9 +14,10 @@ import asyncio
 import datetime
 
 import httpx
-from openai import OpenAI
 
 from assistant.agent import db_misc as db
+from assistant.config import load_config
+from assistant.llm.model_pool import build_llm_client
 
 NAPCAT_API_URL = os.getenv("NAPCAT_API_URL", "http://127.0.0.1:3000")
 NEWS_NOTIFY_QQ = os.getenv("NEWS_NOTIFY_QQ", "")
@@ -119,21 +120,17 @@ async def _generate_digest(raw_news: str, now: datetime.datetime) -> str:
     weekday = weekdays[now.weekday()]
 
     try:
-        api_key = os.getenv("DEEPSEEK_API_KEY", "")
-        base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
-        model = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
-
-        if not api_key:
+        cfg = load_config()
+        if not cfg.api_key:
             print("[每日新闻] 未配置 DEEPSEEK_API_KEY，跳过AI摘要")
             return ""
 
-        client = OpenAI(api_key=api_key, base_url=base_url)
+        client = build_llm_client(cfg)
 
         loop = asyncio.get_event_loop()
         response = await loop.run_in_executor(
             None,
             lambda: client.chat.completions.create(
-                model=model,
                 messages=[
                     {"role": "system", "content": _NEWS_DIGEST_PROMPT},
                     {"role": "user", "content": f"今天是{date_str} 星期{weekday}\n\n{raw_news}"},

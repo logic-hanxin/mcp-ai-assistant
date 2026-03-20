@@ -35,6 +35,9 @@ async def get_agent(user_id: str) -> AgentCore:
             model=_config.model,
             session_id=user_id,
             user_id=user_id,
+            model_pool=_config.model_pool,
+            llm_request_timeout=_config.request_timeout,
+            llm_max_retries_per_endpoint=_config.max_retries_per_endpoint,
         )
         await agent.connect(_server_script)
         _agents[user_id] = agent

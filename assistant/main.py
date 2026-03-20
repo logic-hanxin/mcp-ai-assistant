@@ -38,6 +38,9 @@ async def run():
         api_key=config.api_key,
         base_url=config.base_url,
         model=config.model,
+        model_pool=config.model_pool,
+        llm_request_timeout=config.request_timeout,
+        llm_max_retries_per_endpoint=config.max_retries_per_endpoint,
     )
     background_tasks: list[asyncio.Task] = []
 

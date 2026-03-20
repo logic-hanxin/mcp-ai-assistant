@@ -15,11 +15,13 @@ class ToolHydrationContext:
     tool_args: dict
     session_user: str
     session_group: str
+    session_image: str
     bb_user: str
     bb_group: str
     bb_repo: str
     bb_branch: str
     bb_city: str
+    bb_image: str
     shareable_text: str
 
 
@@ -88,6 +90,16 @@ class WeatherHydrator(ToolHydrator):
         return args
 
 
+class VisionHydrator(ToolHydrator):
+    def supports(self, tool_name: str) -> bool:
+        return tool_name in ("ocr_image", "understand_image", "scan_qrcode")
+
+    def apply(self, ctx: ToolHydrationContext) -> dict:
+        args = dict(ctx.tool_args)
+        _fill_if_empty(args, "image_url", ctx.session_image or ctx.bb_image)
+        return args
+
+
 class RuleHydrator(ToolHydrator):
     def supports(self, tool_name: str) -> bool:
         return tool_name in ("add_rule", "delete_rule")
@@ -119,6 +131,7 @@ def build_default_tool_hydrators() -> list[ToolHydrator]:
         MessageHydrator(),
         GitHubHydrator(),
         WeatherHydrator(),
+        VisionHydrator(),
         RuleHydrator(),
         GroupOpsHydrator(),
     ]
@@ -133,11 +146,13 @@ def hydrate_tool_args(ctx: ToolHydrationContext, hydrators: list[ToolHydrator]) 
                 tool_args=args,
                 session_user=ctx.session_user,
                 session_group=ctx.session_group,
+                session_image=ctx.session_image,
                 bb_user=ctx.bb_user,
                 bb_group=ctx.bb_group,
                 bb_repo=ctx.bb_repo,
                 bb_branch=ctx.bb_branch,
                 bb_city=ctx.bb_city,
+                bb_image=ctx.bb_image,
                 shareable_text=ctx.shareable_text,
             )
             args = hydrator.apply(next_ctx)

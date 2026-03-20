@@ -463,6 +463,7 @@ async def onebot_event(request: Request):
             "group_id": str(group_id),
             "user_display_name": display_name,
             "latest_image_url": next((img.get("url", "") for img in images if img.get("url")), ""),
+            "latest_file_url": next((f.get("url", "") for f in files if f.get("url")), ""),
         }
 
         # 智能决策: 判断是否需要回复
@@ -559,6 +560,7 @@ async def _handle_message(session_id: str, text: str, user_qq: str = "", group_i
             "group_id": group_id,
             "user_display_name": display_name,
             "latest_image_url": next((img.get("url", "") for img in images if img.get("url")), ""),
+            "latest_file_url": next((f.get("url", "") for f in files if f.get("url")), ""),
         }
 
         # 构建包含附件信息的消息
@@ -570,7 +572,10 @@ async def _handle_message(session_id: str, text: str, user_qq: str = "", group_i
             ])
             message_content = f"{text}\n{image_info}"
         if files:
-            file_info = "\n".join([f"[文件: {f.get('name', 'unknown')}]" for f in files])
+            file_info = "\n".join([
+                f"[文件: {f.get('url') or f.get('name', 'unknown')}]"
+                for f in files
+            ])
             message_content = f"{message_content}\n{file_info}"
 
         token = set_current_user_qq(user_qq)

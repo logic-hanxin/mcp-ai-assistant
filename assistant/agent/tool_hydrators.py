@@ -16,12 +16,14 @@ class ToolHydrationContext:
     session_user: str
     session_group: str
     session_image: str
+    session_file: str
     bb_user: str
     bb_group: str
     bb_repo: str
     bb_branch: str
     bb_city: str
     bb_image: str
+    bb_file: str
     shareable_text: str
 
 
@@ -100,6 +102,16 @@ class VisionHydrator(ToolHydrator):
         return args
 
 
+class DocumentHydrator(ToolHydrator):
+    def supports(self, tool_name: str) -> bool:
+        return tool_name in ("parse_document", "import_document", "read_file")
+
+    def apply(self, ctx: ToolHydrationContext) -> dict:
+        args = dict(ctx.tool_args)
+        _fill_if_empty(args, "file_path", ctx.session_file or ctx.bb_file)
+        return args
+
+
 class RuleHydrator(ToolHydrator):
     def supports(self, tool_name: str) -> bool:
         return tool_name in ("add_rule", "delete_rule")
@@ -132,6 +144,7 @@ def build_default_tool_hydrators() -> list[ToolHydrator]:
         GitHubHydrator(),
         WeatherHydrator(),
         VisionHydrator(),
+        DocumentHydrator(),
         RuleHydrator(),
         GroupOpsHydrator(),
     ]
@@ -147,12 +160,14 @@ def hydrate_tool_args(ctx: ToolHydrationContext, hydrators: list[ToolHydrator]) 
                 session_user=ctx.session_user,
                 session_group=ctx.session_group,
                 session_image=ctx.session_image,
+                session_file=ctx.session_file,
                 bb_user=ctx.bb_user,
                 bb_group=ctx.bb_group,
                 bb_repo=ctx.bb_repo,
                 bb_branch=ctx.bb_branch,
                 bb_city=ctx.bb_city,
                 bb_image=ctx.bb_image,
+                bb_file=ctx.bb_file,
                 shareable_text=ctx.shareable_text,
             )
             args = hydrator.apply(next_ctx)

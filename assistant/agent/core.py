@@ -175,6 +175,9 @@ class AgentCore:
         latest_image_url = str(self.session_context.get("latest_image_url", "")).strip()
         if latest_image_url:
             self.blackboard.set(self._bb_scoped_key("last_image_url"), latest_image_url[:500])
+        latest_file_url = str(self.session_context.get("latest_file_url", "")).strip()
+        if latest_file_url:
+            self.blackboard.set(self._bb_scoped_key("last_file_url"), latest_file_url[:500])
 
         # 1. Router: 意图分类
         recent_ctx = self._get_recent_context()
@@ -507,6 +510,7 @@ class AgentCore:
         session_user = str(self.session_context.get("user_qq", "")).strip()
         session_group = str(self.session_context.get("group_id", "")).strip()
         session_image = str(self.session_context.get("latest_image_url", "")).strip()
+        session_file = str(self.session_context.get("latest_file_url", "")).strip()
 
         bb_user = str(self.blackboard.get(self._bb_scoped_key("last_target_qq"), "")).strip()
         bb_group = str(self.blackboard.get(self._bb_scoped_key("last_target_group"), "")).strip()
@@ -514,6 +518,7 @@ class AgentCore:
         bb_branch = str(self.blackboard.get(self._bb_scoped_key("last_github_branch"), "")).strip()
         bb_city = str(self.blackboard.get(self._bb_scoped_key("last_city"), "")).strip()
         bb_image = str(self.blackboard.get(self._bb_scoped_key("last_image_url"), "")).strip()
+        bb_file = str(self.blackboard.get(self._bb_scoped_key("last_file_url"), "")).strip()
         if not bb_user:
             bb_user = self._latest_contact_qq()
         shareable_text = self._latest_shareable_result()
@@ -525,12 +530,14 @@ class AgentCore:
                 session_user=session_user,
                 session_group=session_group,
                 session_image=session_image,
+                session_file=session_file,
                 bb_user=bb_user,
                 bb_group=bb_group,
                 bb_repo=bb_repo,
                 bb_branch=bb_branch,
                 bb_city=bb_city,
                 bb_image=bb_image,
+                bb_file=bb_file,
                 shareable_text=shareable_text,
             ),
             hydrators,
@@ -598,6 +605,8 @@ class AgentCore:
             ctx_parts.append(f"当前对话所在群号: {self.session_context['group_id']}")
         if self.session_context.get("latest_image_url"):
             ctx_parts.append(f"当前消息附带图片链接: {self.session_context['latest_image_url']}")
+        if self.session_context.get("latest_file_url"):
+            ctx_parts.append(f"当前消息附带文件链接: {self.session_context['latest_file_url']}")
         session_ctx = "\n".join(ctx_parts) if ctx_parts else ""
 
         # 加载守则

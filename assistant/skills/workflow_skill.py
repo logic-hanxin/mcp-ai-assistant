@@ -147,6 +147,41 @@ class WorkflowSkill(BaseSkill):
                 intents=["delete_workflow"],
             ),
             ToolDefinition(
+                name="update_workflow",
+                description="修改一个已有工作流的名称、步骤、调度、通知对象或启用状态。",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "workflow_id": {"type": "integer", "description": "工作流ID"},
+                        "name": {"type": "string", "description": "新的工作流名称（可选）", "default": ""},
+                        "steps": {
+                            "type": "string",
+                            "description": "新的步骤 JSON 数组（可选）",
+                            "default": "",
+                        },
+                        "schedule": {"type": "string", "description": "新的调度规则（可选）", "default": ""},
+                        "notify_qq": {"type": "string", "description": "新的通知QQ（可选）", "default": ""},
+                        "notify_group_id": {"type": "string", "description": "新的通知群（可选）", "default": ""},
+                        "enabled": {"type": "boolean", "description": "新的启用状态（可选）"},
+                    },
+                    "required": ["workflow_id"],
+                },
+                handler=self._update_workflow,
+                metadata={
+                    "category": "write",
+                    "side_effect": "data_write",
+                    "required_all": ["workflow_id"],
+                    "store_args": {
+                        "notify_qq": "last_target_qq",
+                        "notify_group_id": "last_target_group",
+                    },
+                    "store_result": ["last_workflow_result"],
+                },
+                result_parser=self._parse_update_workflow_result,
+                keywords=["修改工作流", "编辑工作流", "更新自动化任务"],
+                intents=["update_workflow", "edit_workflow"],
+            ),
+            ToolDefinition(
                 name="run_workflow_now",
                 description="立即手动执行一个工作流（不影响正常调度），返回执行结果。",
                 parameters={
@@ -320,6 +355,96 @@ class WorkflowSkill(BaseSkill):
             return f"未找到 ID 为 {workflow_id} 的工作流。"
         return f"工作流 {workflow_id} 已删除。"
 
+    def _update_workflow(
+        self,
+        workflow_id: int,
+        name: str = "",
+        steps: str = "",
+        schedule: str = "",
+        notify_qq: str = "",
+        notify_group_id: str = "",
+        enabled=None,
+    ) -> str:
+        try:
+            wf = db.workflow_get(workflow_id)
+        except Exception as e:
+            return f"查询失败: {e}"
+        if not wf:
+            return f"未找到 ID 为 {workflow_id} 的工作流。"
+
+        updates = {}
+        summary = []
+
+        new_name = name.strip()
+        if new_name and new_name != str(wf.get("name", "")).strip():
+            updates["name"] = new_name
+            summary.append(f"名称={new_name}")
+
+        step_text = steps.strip()
+        step_count = None
+        if step_text:
+            steps_list, steps_error = parse_workflow_steps(step_text)
+            if steps_error:
+                return steps_error
+            updates["steps"] = step_text
+            step_count = len(steps_list or [])
+            summary.append(f"步骤数={step_count}")
+        else:
+            existing_steps, _ = parse_workflow_steps(wf.get("steps", "[]"))
+            step_count = len(existing_steps or [])
+
+        new_schedule = schedule.strip()
+        final_schedule = new_schedule or str(wf.get("schedule", "")).strip()
+        if new_schedule:
+            next_run = calc_next_run(final_schedule)
+            if next_run is None:
+                return f"无法解析调度规则 '{final_schedule}'。"
+            updates["schedule"] = final_schedule
+            summary.append(f"调度={final_schedule}")
+        else:
+            next_run = None
+
+        if notify_qq.strip() and notify_qq.strip() != str(wf.get("notify_qq", "")).strip():
+            updates["notify_qq"] = notify_qq.strip()
+            summary.append(f"通知QQ={notify_qq.strip()}")
+        if notify_group_id.strip() and notify_group_id.strip() != str(wf.get("notify_group_id", "")).strip():
+            updates["notify_group_id"] = notify_group_id.strip()
+            summary.append(f"通知群={notify_group_id.strip()}")
+
+        if enabled is not None and bool(enabled) != bool(wf.get("enabled")):
+            updates["enabled"] = 1 if enabled else 0
+            summary.append("状态=启用" if enabled else "状态=禁用")
+            if enabled and next_run is None:
+                next_run = calc_next_run(final_schedule)
+            if not enabled:
+                updates["next_run"] = None
+
+        if next_run is not None and updates.get("enabled", wf.get("enabled")):
+            updates["next_run"] = next_run.strftime("%Y-%m-%d %H:%M:%S")
+
+        if updates:
+            final_name = str(updates.get("name", wf.get("name", ""))).strip()
+            final_steps_count = step_count if step_count is not None else 0
+            final_schedule_text = str(updates.get("schedule", wf.get("schedule", ""))).strip()
+            updates["description"] = f"{final_steps_count} 个步骤, 调度: {final_schedule_text}"
+
+        if not updates:
+            return f"工作流 {workflow_id} 没有需要更新的内容。"
+
+        try:
+            ok = db.workflow_update(workflow_id, **updates)
+        except Exception as e:
+            return f"更新失败: {e}"
+        if not ok:
+            return f"未找到 ID 为 {workflow_id} 的工作流。"
+
+        return (
+            f"工作流 {workflow_id} 已更新。\n"
+            f"  变更: {'; '.join(summary)}\n"
+            f"  下次执行: "
+            f"{next_run.strftime('%Y-%m-%d %H:%M') if next_run else (str(wf.get('next_run', ''))[:16] or '无')}"
+        )
+
     def _run_now(self, workflow_id: int) -> str:
         try:
             wf = db.workflow_get(workflow_id)
@@ -487,6 +612,15 @@ class WorkflowSkill(BaseSkill):
             "action": "delete_workflow",
             "workflow_id": args.get("workflow_id"),
             "deleted": "已删除" in result,
+        }
+
+    def _parse_update_workflow_result(self, args: dict, result: str) -> dict | None:
+        return {
+            "action": "update_workflow",
+            "workflow_id": args.get("workflow_id"),
+            "updated": "已更新" in result,
+            "name": str(args.get("name", "")).strip(),
+            "schedule": str(args.get("schedule", "")).strip(),
         }
 
     def _parse_run_workflow_result(self, args: dict, result: str) -> dict | None:

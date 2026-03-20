@@ -102,3 +102,34 @@ def workflow_delete(workflow_id: int) -> bool:
         return cur.rowcount > 0
     finally:
         conn.close()
+
+
+def workflow_update(workflow_id: int, **fields) -> bool:
+    allowed_fields = {
+        "name",
+        "description",
+        "steps",
+        "schedule",
+        "notify_qq",
+        "notify_group_id",
+        "enabled",
+        "next_run",
+        "last_result",
+    }
+    updates = {key: value for key, value in fields.items() if key in allowed_fields}
+    if not updates:
+        return False
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            assignments = ", ".join(f"{key} = %s" for key in updates)
+            values = list(updates.values()) + [workflow_id]
+            cur.execute(
+                f"UPDATE app_workflows SET {assignments} WHERE id = %s",
+                values,
+            )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()

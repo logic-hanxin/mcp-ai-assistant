@@ -117,6 +117,17 @@ class DocumentHydrator(ToolHydrator):
         return args
 
 
+class RecruitmentHydrator(ToolHydrator):
+    def supports(self, tool_name: str) -> bool:
+        return tool_name == "submit_recruitment_application"
+
+    def apply(self, ctx: ToolHydrationContext) -> dict:
+        args = dict(ctx.tool_args)
+        _fill_if_empty(args, "qq_number", ctx.session_user or ctx.bb_user)
+        _fill_if_empty(args, "resume_image_url", ctx.session_image or ctx.bb_image)
+        return args
+
+
 class RuleHydrator(ToolHydrator):
     def supports(self, tool_name: str) -> bool:
         return tool_name in ("add_rule", "delete_rule")
@@ -150,6 +161,7 @@ def build_default_tool_hydrators() -> list[ToolHydrator]:
         WeatherHydrator(),
         VisionHydrator(),
         DocumentHydrator(),
+        RecruitmentHydrator(),
         RuleHydrator(),
         GroupOpsHydrator(),
     ]

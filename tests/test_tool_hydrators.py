@@ -190,6 +190,29 @@ class ToolHydratorTests(unittest.TestCase):
         )
         self.assertEqual(args["file_path"], "https://files.example.com/current.pdf")
 
+    def test_recruitment_hydrator_uses_session_user_and_image(self):
+        args = hydrate_tool_args(
+            ToolHydrationContext(
+                tool_name="submit_recruitment_application",
+                tool_args={"name": "小王", "department": "组织部"},
+                session_user="123456",
+                session_group="",
+                session_image="https://img.example.com/resume.jpg",
+                session_file="https://files.example.com/resume.pdf",
+                bb_user="",
+                bb_group="",
+                bb_repo="",
+                bb_branch="",
+                bb_city="",
+                bb_image="",
+                bb_file="",
+                shareable_text="",
+            ),
+            self.hydrators,
+        )
+        self.assertEqual(args["qq_number"], "123456")
+        self.assertEqual(args["resume_image_url"], "https://img.example.com/resume.jpg")
+
 
 if __name__ == "__main__":
     unittest.main()

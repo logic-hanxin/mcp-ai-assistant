@@ -11,6 +11,7 @@ from assistant.skills.base import BaseSkill, ToolDefinition, register
 
 
 DEFAULT_UPLOAD_URL = os.getenv("RECRUITMENT_UPLOAD_URL", "http://120.48.176.249/upload_resume/")
+DEFAULT_STATUS_URL = os.getenv("RECRUITMENT_STATUS_URL", "http://120.48.176.249/query_resume_status/")
 DEPARTMENTS = {
     "组织部",
     "宣传部",
@@ -69,7 +70,33 @@ class RecruitmentSkill(BaseSkill):
                 result_parser=self._parse_submit_result,
                 keywords=["纳新报名", "提交简历", "加入部门", "报名协会"],
                 intents=["submit_recruitment_application", "recruitment_signup"],
-            )
+            ),
+            ToolDefinition(
+                name="query_resume_status",
+                description="按姓名查询纳新报名状态，可选补充 QQ 号做更精确匹配。",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "报名人姓名"},
+                        "student_id": {"type": "string", "description": "报名时填写的 QQ 号，可选"},
+                        "status_url": {"type": "string", "description": "查询接口地址，默认使用系统配置", "default": ""},
+                    },
+                    "required": ["name"],
+                },
+                handler=self._query_resume_status,
+                metadata={
+                    "category": "read",
+                    "side_effect": "none",
+                    "required_all": ["name"],
+                    "store_args": {
+                        "student_id": "last_target_qq",
+                    },
+                    "store_result": ["last_recruitment_status"],
+                },
+                result_parser=self._parse_query_status_result,
+                keywords=["报名状态", "简历状态", "纳新进度", "面试状态"],
+                intents=["query_resume_status", "recruitment_status"],
+            ),
         ]
 
     def _submit_recruitment_application(
@@ -146,6 +173,70 @@ class RecruitmentSkill(BaseSkill):
             "department": str(args.get("department", "")).strip(),
             "resume_image_url": str(args.get("resume_image_url", "")).strip(),
             "submitted": "报名已提交" in result,
+            "result": result[:500],
+        }
+
+    def _query_resume_status(
+        self,
+        name: str,
+        student_id: str = "",
+        status_url: str = "",
+    ) -> str:
+        applicant_name = (name or "").strip()
+        applicant_qq = str(student_id or "").strip()
+        target_url = (status_url or "").strip() or DEFAULT_STATUS_URL
+
+        if not applicant_name:
+            return "查询报名状态需要姓名。"
+        if not target_url:
+            return "未配置状态查询接口，请设置 RECRUITMENT_STATUS_URL。"
+
+        params = {"name": applicant_name}
+        if applicant_qq:
+            params["student_id"] = applicant_qq
+
+        try:
+            import requests
+
+            resp = requests.get(target_url, params=params, timeout=30)
+            response_text = resp.text[:500]
+            payload = resp.json() if hasattr(resp, "json") else None
+
+            if resp.status_code >= 400:
+                message = ""
+                if isinstance(payload, dict):
+                    message = str(payload.get("message", "")).strip()
+                return (
+                    f"报名状态查询失败：HTTP {resp.status_code}\n"
+                    f"接口：{target_url}\n"
+                    f"原因：{message or response_text}"
+                )
+
+            if not isinstance(payload, dict) or not payload.get("success"):
+                return f"报名状态查询失败：{response_text or '接口返回格式异常'}"
+
+            records = payload.get("data") or []
+            if not records:
+                return f"没有查到 {applicant_name} 的报名记录。"
+
+            lines = [f"找到 {len(records)} 条报名记录："]
+            for idx, record in enumerate(records, start=1):
+                lines.append(
+                    f"{idx}. {record.get('name', applicant_name)} / QQ: {record.get('student_id', '-')}"
+                )
+                lines.append(f"   部门: {record.get('department', '-')}")
+                lines.append(f"   状态: {record.get('status_display') or record.get('status') or '-'}")
+                lines.append(f"   上传时间: {record.get('upload_time', '-')}")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"报名状态查询失败: {e}"
+
+    def _parse_query_status_result(self, args: dict, result: str) -> dict | None:
+        return {
+            "action": "query_resume_status",
+            "name": str(args.get("name", "")).strip(),
+            "student_id": str(args.get("student_id", "")).strip(),
+            "succeeded": "找到 " in result and "报名记录" in result,
             "result": result[:500],
         }
 

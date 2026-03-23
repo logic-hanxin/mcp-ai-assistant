@@ -101,6 +101,71 @@ class RecruitmentSkillTests(unittest.TestCase):
 
         self.assertIn("请先发送一张", result)
 
+    def test_query_resume_status_formats_successful_response(self):
+        query_response = type(
+            "QueryResp",
+            (),
+            {
+                "status_code": 200,
+                "text": '{"success": true}',
+                "json": lambda self: {
+                    "success": True,
+                    "data": [
+                        {
+                            "name": "韩鑫",
+                            "student_id": "3409307078",
+                            "department": "运营部",
+                            "status": "pending",
+                            "status_display": "待面试",
+                            "upload_time": "2026-03-23 20:00:00",
+                            "interview_notes_count": 1,
+                            "avg_rating": 4.5,
+                        }
+                    ],
+                },
+            },
+        )()
+        fake_requests = SimpleNamespace(get=lambda *args, **kwargs: query_response)
+        with patch.dict(sys.modules, {"requests": fake_requests}):
+            from assistant.skills.recruitment_skill import RecruitmentSkill
+
+            skill = RecruitmentSkill()
+            result = skill._query_resume_status(
+                name="韩鑫",
+                student_id="3409307078",
+                status_url="http://example.com/query_resume_status/",
+            )
+
+        self.assertIn("找到 1 条报名记录", result)
+        self.assertIn("待面试", result)
+        self.assertNotIn("平均评分", result)
+
+    def test_query_resume_status_formats_not_found_response(self):
+        query_response = type(
+            "QueryResp",
+            (),
+            {
+                "status_code": 404,
+                "text": '{"success": false}',
+                "json": lambda self: {
+                    "success": False,
+                    "message": '未找到姓名为"韩鑫"的简历记录',
+                },
+            },
+        )()
+        fake_requests = SimpleNamespace(get=lambda *args, **kwargs: query_response)
+        with patch.dict(sys.modules, {"requests": fake_requests}):
+            from assistant.skills.recruitment_skill import RecruitmentSkill
+
+            skill = RecruitmentSkill()
+            result = skill._query_resume_status(
+                name="韩鑫",
+                status_url="http://example.com/query_resume_status/",
+            )
+
+        self.assertIn("报名状态查询失败", result)
+        self.assertIn("未找到姓名", result)
+
 
 if __name__ == "__main__":
     unittest.main()

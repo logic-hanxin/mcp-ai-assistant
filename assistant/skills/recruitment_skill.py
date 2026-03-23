@@ -12,6 +12,11 @@ from assistant.skills.base import BaseSkill, ToolDefinition, register
 
 DEFAULT_UPLOAD_URL = os.getenv("RECRUITMENT_UPLOAD_URL", "http://120.48.176.249/upload_resume/")
 DEFAULT_STATUS_URL = os.getenv("RECRUITMENT_STATUS_URL", "http://120.48.176.249/query_resume_status/")
+IMAGE_EXTENSIONS = {
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/png": ".png",
+}
 DEPARTMENTS = {
     "组织部",
     "宣传部",
@@ -34,6 +39,28 @@ def _guess_filename(file_url: str, response: Any = None) -> str:
     if path_name:
         return path_name
     return "resume.jpg"
+
+
+def _normalize_image_filename(filename: str, content_type: str) -> str:
+    normalized_name = (filename or "").strip() or "resume"
+    suffix = Path(normalized_name).suffix.lower()
+    if suffix in (".jpg", ".jpeg", ".png"):
+        return normalized_name
+
+    ext = IMAGE_EXTENSIONS.get((content_type or "").split(";", 1)[0].strip().lower())
+    if ext:
+        return f"{normalized_name}{ext}"
+    return normalized_name
+
+
+def _safe_json(resp: Any) -> dict | None:
+    if not hasattr(resp, "json"):
+        return None
+    try:
+        payload = resp.json()
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 class RecruitmentSkill(BaseSkill):
@@ -125,11 +152,18 @@ class RecruitmentSkill(BaseSkill):
         try:
             import requests
 
-            file_resp = requests.get(image_url, timeout=30)
+            file_resp = requests.get(
+                image_url,
+                timeout=30,
+                headers={
+                    "User-Agent": "Mozilla/5.0",
+                    "Referer": "https://im.qq.com/",
+                },
+            )
             file_resp.raise_for_status()
             file_bytes = file_resp.content
-            filename = _guess_filename(image_url, file_resp)
             content_type = file_resp.headers.get("Content-Type", "application/octet-stream")
+            filename = _normalize_image_filename(_guess_filename(image_url, file_resp), content_type)
 
             lower_name = filename.lower()
             if not (lower_name.endswith(".jpg") or lower_name.endswith(".jpeg") or lower_name.endswith(".png")):
@@ -147,9 +181,11 @@ class RecruitmentSkill(BaseSkill):
             response_text = resp.text[:500]
 
             if resp.status_code >= 400:
+                diagnostic = f"文件名={filename}, 内容类型={content_type}"
                 return (
                     f"报名提交失败：HTTP {resp.status_code}\n"
                     f"接口：{target_url}\n"
+                    f"诊断：{diagnostic}\n"
                     f"响应：{response_text}"
                 )
 
@@ -200,7 +236,16 @@ class RecruitmentSkill(BaseSkill):
 
             resp = requests.get(target_url, params=params, timeout=30)
             response_text = resp.text[:500]
-            payload = resp.json() if hasattr(resp, "json") else None
+            payload = _safe_json(resp)
+
+            if payload is None:
+                fallback_resp = requests.post(target_url, data=params, timeout=30)
+                fallback_text = fallback_resp.text[:500]
+                fallback_payload = _safe_json(fallback_resp)
+                if fallback_payload is not None:
+                    resp = fallback_resp
+                    response_text = fallback_text
+                    payload = fallback_payload
 
             if resp.status_code >= 400:
                 message = ""
